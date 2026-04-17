@@ -1,6 +1,7 @@
 use crate::error::CoreError;
 
 /// Capture the primary monitor as PNG bytes.
+/// COM resources (device, staging, duplication) are released via Drop when function returns.
 pub fn capture_screen() -> Result<Vec<u8>, CoreError> {
     unsafe {
         use windows::Win32::Graphics::Dxgi::*;
@@ -134,9 +135,9 @@ pub fn capture_screen() -> Result<Vec<u8>, CoreError> {
             for x in 0..width {
                 let src = y * pitch + x * 4;
                 let dst = (y * width + x) * 4;
-                rgba[dst] = data[src + 2]; // R (from B)
-                rgba[dst + 1] = data[src + 1]; // G
-                rgba[dst + 2] = data[src]; // B (from R)
+                rgba[dst] = data[src + 2]; // R <- BGRA byte 2
+                rgba[dst + 1] = data[src + 1]; // G <- BGRA byte 1
+                rgba[dst + 2] = data[src]; // B <- BGRA byte 0
                 rgba[dst + 3] = 255; // A
             }
         }

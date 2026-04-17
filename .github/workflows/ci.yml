@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --all
+
+      - name: Unit tests (skip integration tests requiring display)
+        run: cargo test --all -- --skip test_notepad --skip test_calculator
+
+      - name: Build MCP release binary
+        run: cargo build -p ghost-mcp --release

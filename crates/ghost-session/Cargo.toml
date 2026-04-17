@@ -12,3 +12,7 @@ image = { workspace = true }
 
 [dev-dependencies]
 ghost-core = { path = "../ghost-core" }
+
+[[example]]
+name = "notepad_hello"
+path = "../../examples/notepad_hello.rs"

@@ -1,0 +1,11 @@
+[package]
+name = "ghost-session"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ghost-core = { path = "../ghost-core" }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+image = { workspace = true }

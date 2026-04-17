@@ -1,0 +1,29 @@
+[workspace]
+members = [
+    "crates/ghost-core",
+    "crates/ghost-session",
+    "crates/ghost-mcp",
+]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D",
+] }

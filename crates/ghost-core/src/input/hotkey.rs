@@ -7,15 +7,15 @@ use crate::error::CoreError;
 pub static STOP_FLAG: AtomicBool = AtomicBool::new(false);
 
 pub fn is_stopped() -> bool {
-    STOP_FLAG.load(Ordering::SeqCst)
+    STOP_FLAG.load(Ordering::Acquire)
 }
 
 pub fn trigger_stop() {
-    STOP_FLAG.store(true, Ordering::SeqCst);
+    STOP_FLAG.store(true, Ordering::Release);
 }
 
 pub fn reset_stop() {
-    STOP_FLAG.store(false, Ordering::SeqCst);
+    STOP_FLAG.store(false, Ordering::Release);
 }
 
 /// Register Ctrl+Alt+G as a global hotkey (ID=1).
@@ -23,6 +23,7 @@ pub fn reset_stop() {
 /// On trigger: sets STOP_FLAG, releases all modifier keys.
 pub fn register_emergency_stop() -> Result<(), CoreError> {
     unsafe {
+        // ID=1 is globally reserved for this process. Call once per process only.
         RegisterHotKey(None, 1, MOD_CONTROL | MOD_ALT, b'G' as u32)
             .map_err(|_| CoreError::Win32 { code: GetLastError().0, context: "RegisterHotKey" })?;
     }
@@ -30,7 +31,13 @@ pub fn register_emergency_stop() -> Result<(), CoreError> {
     std::thread::spawn(|| {
         let mut msg = MSG::default();
         unsafe {
-            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            loop {
+                let ret = GetMessageW(&mut msg, None, 0, 0);
+                if ret.0 == 0 { break; } // WM_QUIT
+                if ret.0 == -1 {
+                    tracing::error!("GetMessageW failed in hotkey thread");
+                    break;
+                }
                 if msg.message == WM_HOTKEY && msg.wParam.0 == 1 {
                     tracing::warn!("Emergency stop triggered (Ctrl+Alt+G)");
                     trigger_stop();
@@ -61,7 +68,10 @@ pub fn release_all_modifiers() {
         .collect();
 
     unsafe {
-        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        if sent != inputs.len() as u32 {
+            tracing::warn!("release_all_modifiers: sent {}/{} inputs", sent, inputs.len());
+        }
     }
 }
 

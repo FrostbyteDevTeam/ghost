@@ -9,3 +9,6 @@ tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 image = { workspace = true }
+
+[dev-dependencies]
+ghost-core = { path = "../ghost-core" }

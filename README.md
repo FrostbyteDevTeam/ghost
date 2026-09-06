@@ -211,7 +211,9 @@ The binaries are **not code-signed yet**, so Windows SmartScreen will warn you o
 → *Run anyway*). That warning is about publisher identity, which needs a paid certificate tied to a verified legal
 entity; the attestation above is the stronger statement about origin and costs nothing, but Windows does not read it.
 The pipeline signs the moment a certificate is configured, from any CA - see
-[`docs/code-signing.md`](docs/code-signing.md). If an antivirus engine quarantines a release, verify the
+[`docs/code-signing.md`](docs/code-signing.md), and
+[`docs/signing-policy.md`](docs/signing-policy.md) for what gets signed, by
+whom, and what leaves your machine (nothing, unless you configure a vision key). If an antivirus engine quarantines a release, verify the
 checksum and see [`docs/antivirus.md`](docs/antivirus.md) for what the binaries do to stay recognisable and how
 to report a false positive. The kit buys convenience, not capability - everything Ghost can do is in the free source
 below, and building it yourself takes one command.

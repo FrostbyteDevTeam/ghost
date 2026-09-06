@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.23.4] - a signing policy, and a privacy answer
+
+Documentation only; no behaviour changes.
+
+- **`docs/signing-policy.md`** - what gets signed, by whom, how a release is
+  built, and what a user can verify for themselves. It also answers a question
+  the project had never answered in one place: **what leaves your machine**.
+  Nothing, by default. No telemetry, no analytics, no update check, no
+  account. The only outbound request Ghost can make is the optional vision
+  tier, and only if you set an API key, in which case a screenshot of the
+  window being automated goes to the provider you named. Browser control talks
+  to `127.0.0.1`. Uninstalling is deleting the binary, because Ghost installs
+  and registers nothing.
+- **`docs/signpath-application.md`** - a prepared application for free
+  open-source code signing, with each eligibility condition checked against
+  evidence in the repository, and a written answer to the one condition that
+  needs it: SignPath excludes tools that circumvent security measures, and a
+  reviewer will reasonably ask why a tool that injects input and creates hidden
+  desktops is not one. The answer is the project's own design record - no
+  privilege escalation, no code injection, no process hooking, no
+  `ReadProcessMemory` (removed in v0.21.5), and a default policy the automated
+  agent itself cannot raise.
+
 ## [0.23.3] - what you are agreeing to, and where it came from
 
 Readiness work rather than new capability: the three things a first outside

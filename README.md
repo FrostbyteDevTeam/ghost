@@ -166,7 +166,7 @@ the [MCP registry](https://registry.modelcontextprotocol.io) as `io.github.NORTH
 so registry-aware clients can install it from there. The bundle holds the `ghost-mcp` server
 only; the CLI and HTTP server are in the archives below.
 
-**Option A - Prebuilt binaries (free).** Every release ships signed-by-checksum
+**Prebuilt binaries (free).** Every release ships signed-by-checksum
 archives for both platforms on the
 [Releases page](https://github.com/NORTHTEKDevs/ghost/releases/latest):
 
@@ -180,11 +180,6 @@ tar -xzf ghost-linux-x86_64.tar.gz && ./install.sh
 
 Windows: download `ghost-windows-x64.zip` from the same page. Verify the
 checksum, unzip, and add the folder to your `PATH`. Then run `ghost doctor`.
-
-**Option B - Ready-to-run Windows kit ($20, one-time).** Prebuilt Windows binaries (`ghost.exe`,
-`ghost-http.exe`, `ghost-mcp.exe`) plus a quick-start, MCP config, and examples - no Rust toolchain, runs in
-two minutes. Every kit is built by `scripts/package-kit.ps1`, which refuses to package unless the full live
-desktop suite passes. Get it at **[northtek.io/ghost](https://northtek.io/ghost)**.
 
 The binaries are **not code-signed yet**, so Windows SmartScreen will warn you on first run (click *More info*
 → *Run anyway*). The release pipeline signs them the moment a signing identity is configured; see

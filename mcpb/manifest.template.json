@@ -9,13 +9,13 @@
   "author": {
     "name": "Northtek",
     "email": "info@northtek.io",
-    "url": "https://northtek.io/ghost"
+    "url": "https://northtek.io"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/NORTHTEKDevs/ghost.git"
   },
-  "homepage": "https://northtek.io/ghost",
+  "homepage": "https://northtek.io",
   "documentation": "https://github.com/NORTHTEKDevs/ghost#readme",
   "support": "https://github.com/NORTHTEKDevs/ghost/issues",
   "server": {

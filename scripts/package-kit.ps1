@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-  Build the Ghost ready-to-run kit sold at northtek.io/ghost.
+  Build the Ghost ready-to-run Windows kit (prebuilt binaries + quick start + examples).
 
 .DESCRIPTION
   Produces ghost-kit-v<version>-win-x64.zip plus a SHA256 sidecar.

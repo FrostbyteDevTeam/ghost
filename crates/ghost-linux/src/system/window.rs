@@ -73,6 +73,13 @@ pub fn foreground_window_rect() -> Option<(i32, i32, i32, i32)> {
     window_rect(foreground_window())
 }
 
+/// Process id that owns a window. Mirrors the Windows engine; the foreground
+/// guard that uses it never runs on Linux (the background policy is not
+/// enforced there), so this is the honest placeholder.
+pub fn window_pid(_hwnd: isize) -> u32 {
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,11 +88,4 @@ mod tests {
     fn a_zero_handle_has_no_rectangle() {
         assert!(window_rect(0).is_none());
     }
-}
-
-/// Process id that owns a window. Mirrors the Windows engine; the foreground
-/// guard that uses it never runs on Linux (the background policy is not
-/// enforced there), so this is the honest placeholder.
-pub fn window_pid(_hwnd: isize) -> u32 {
-    0
 }

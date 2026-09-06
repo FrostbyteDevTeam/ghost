@@ -2603,6 +2603,69 @@ impl GhostSession {
         }))
     }
 
+    /// An element's current value inside a NAMED window, read without focus.
+    ///
+    /// The read behind `ghost_assert value-equals|value-contains`: the
+    /// fill-then-verify check has to look at the window the agent is driving,
+    /// never at whatever the human happens to have in front, and it has to
+    /// prefer the editable control when a label carries the same accessible
+    /// name as its field (`First name` names both the label and the input, and
+    /// the label walks first - reading it returns the label's text and the
+    /// assert fails against a field that was filled correctly).
+    pub async fn window_value(&self, hwnd: isize, by: By, role_filter: Option<&str>) -> Result<String> {
+        let name = match &by {
+            By::Name(n) => Some(n.clone()),
+            _ => None,
+        };
+        let lookup = || -> Result<Option<crate::engine::uia::element::UiaElement>> {
+            match &by {
+                By::Description(d) => Err(GhostError::Vision(format!(
+                    "value assertions need an element name or role, not a description; desc={d}"
+                ))),
+                By::Role(r) => self
+                    .tree
+                    .find_by_role_in_hwnd(hwnd, r)
+                    .map_err(GhostError::Core),
+                By::Name(n) => {
+                    let all = self
+                        .tree
+                        .find_all_in_hwnd(hwnd, Some(n), role_filter, 16)
+                        .map_err(GhostError::Core)?;
+                    let pos = all
+                        .iter()
+                        .position(|el| {
+                            crate::engine::uia::patterns::is_editable_role(el.control_type())
+                        })
+                        .unwrap_or(0);
+                    Ok(all.into_iter().nth(pos))
+                }
+            }
+        };
+        // Chromium builds its accessibility subtree lazily, like every other
+        // window-scoped lookup here.
+        let el = match lookup()? {
+            Some(e) => Some(e),
+            None if is_chromium_window(hwnd) => {
+                tokio::time::sleep(Duration::from_millis(450)).await;
+                lookup()?
+            }
+            None => None,
+        };
+        match el {
+            // On Windows a classic EDIT can report an empty UIA value while its
+            // text is readable from the control itself; elsewhere the
+            // accessibility value is all there is.
+            #[cfg(windows)]
+            Some(e) => Ok(crate::hidden::element_value(&e)),
+            #[cfg(not(windows))]
+            Some(e) => Ok(e.get_text()),
+            None => Err(GhostError::ElementNotFound {
+                query: format!("{:?} in window {hwnd:#x}", name.unwrap_or_default()),
+                screenshot: None,
+            }),
+        }
+    }
+
     /// Coordinate-based action with the same focus-anchoring and verification
     /// guarantees as the UIA path. Used for OCR/VLM-grounded dispatch.
     pub async fn act_at(&self, x: i32, y: i32, action: &str, text: Option<&str>) -> Result<serde_json::Value> {

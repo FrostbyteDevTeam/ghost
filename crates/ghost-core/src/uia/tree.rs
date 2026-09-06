@@ -8,10 +8,11 @@ use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::WindowsAndMessaging::WindowFromPoint;
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, EnumWindows, GetAncestor, GetForegroundWindow, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW, SendMessageTimeoutW,
-    SetForegroundWindow, GetWindow, ShowWindow, GA_ROOT, GW_OWNER, SC_MAXIMIZE,
-    SHOW_WINDOW_CMD, SMTO_ABORTIFHUNG, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
-    SW_SHOWMINNOACTIVE, SW_SHOWNA, SW_SHOWNOACTIVATE, WM_CLOSE, WM_SYSCOMMAND,
+    GetWindowPlacement, GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW,
+    SetWindowPlacement, SetWindowPos, SetForegroundWindow, GetWindow, ShowWindow, GA_ROOT,
+    GW_OWNER, HWND_BOTTOM, SHOW_WINDOW_CMD, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, SW_SHOWMAXIMIZED, SW_SHOWMINNOACTIVE,
+    SW_SHOWNA, SW_SHOWNOACTIVATE, WINDOWPLACEMENT, WM_CLOSE,
 };
 
 /// Roles that are acceptable *substitutes* when no exact match exists.
@@ -1018,6 +1019,32 @@ pub fn restore_if_hidden(hwnd_raw: isize) -> bool {
     }
 }
 
+/// Push a window to the bottom of the Z order without activating it.
+///
+/// The circuit-breaker for a window that keeps taking the foreground back the
+/// instant it is handed over: trading activations with it flickers the desktop
+/// and the human loses either way. Lowered, it stops winning the race, and a
+/// window an agent is driving in the background belongs behind the human's
+/// work anyway. Never moves it, never resizes it, never activates it.
+pub fn send_to_back(hwnd_raw: isize) -> bool {
+    if hwnd_raw == 0 {
+        return false;
+    }
+    let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            HWND_BOTTOM,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+        )
+        .is_ok()
+    }
+}
+
 pub fn focus_window(name: &str) -> Result<(), CoreError> {
     // Bringing a window to the foreground is by definition a screen-stealing action.
     focus::require_foreground_allowed("focus_window")?;
@@ -1094,15 +1121,22 @@ fn apply_window_state(hwnd: HWND, state: WindowState, vanished: bool) {
                 let _ = ShowWindow(hwnd, SW_SHOWNA);
             }
             WindowState::Maximize if !activate => {
-                let _ = SendMessageTimeoutW(
-                    hwnd,
-                    WM_SYSCOMMAND,
-                    WPARAM(SC_MAXIMIZE as usize),
-                    LPARAM(0),
-                    SMTO_ABORTIFHUNG,
-                    500,
-                    None,
-                );
+                // No `ShowWindow` command maximises without activating, and
+                // asking the window's own thread (`WM_SYSCOMMAND` /
+                // `SC_MAXIMIZE`) makes it activate itself: measured 2026-09-06,
+                // a browser took the human's foreground for 3.4 s on every
+                // maximize and would not give it up. `SetWindowPlacement` does
+                // not activate, and unlike sizing the window to the work area
+                // by hand it leaves Windows knowing the window IS maximized, so
+                // a later restore puts it back where it was.
+                let mut wp = WINDOWPLACEMENT {
+                    length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                    ..Default::default()
+                };
+                if GetWindowPlacement(hwnd, &mut wp).is_ok() {
+                    wp.showCmd = SW_SHOWMAXIMIZED.0 as u32;
+                    let _ = SetWindowPlacement(hwnd, &wp);
+                }
             }
             _ => {
                 if let Some(cmd) = show_command(state, activate) {
@@ -1113,9 +1147,9 @@ fn apply_window_state(hwnd: HWND, state: WindowState, vanished: bool) {
         if activate || fg_before.is_invalid() || fg_before == hwnd {
             return;
         }
-        // An application answering SC_MAXIMIZE with foreground rights of its
-        // own, or Windows re-activating on a state change, can still move the
-        // foreground. Give it a beat to settle and undo it if it did.
+        // An application with foreground rights of its own, or Windows
+        // re-activating on a state change, can still move the foreground. Give
+        // it a beat to settle and undo it if it did.
         std::thread::sleep(std::time::Duration::from_millis(40));
         if GetForegroundWindow() != fg_before {
             let _ = ensure_foreground(fg_before.0 as isize, 250);
@@ -1246,6 +1280,8 @@ mod tests {
         use windows::Win32::UI::WindowsAndMessaging::{SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE};
         assert_eq!(show_command(WindowState::Minimize, false), Some(SW_SHOWMINNOACTIVE));
         assert_eq!(show_command(WindowState::Restore, false), Some(SW_SHOWNOACTIVATE));
+        // Maximize has no non-activating ShowWindow form: it is done with
+        // SetWindowPos to the work area instead (see apply_window_state).
         assert_eq!(show_command(WindowState::Maximize, false), None);
         assert_eq!(show_command(WindowState::Close, false), None);
         // With foreground allowed the classic activating commands are intended.

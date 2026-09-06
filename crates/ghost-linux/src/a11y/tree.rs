@@ -769,6 +769,14 @@ pub fn ensure_foreground(hwnd: isize, timeout_ms: u64) -> Result<bool> {
     }
 }
 
+/// Push a window behind the others without activating it. Mirrors the Windows
+/// engine's circuit-breaker for a window that keeps grabbing the foreground.
+/// Neither the portal nor AT-SPI exposes stacking control, so this reports
+/// honestly that it did nothing rather than pretending.
+pub fn send_to_back(_hwnd: isize) -> bool {
+    false
+}
+
 /// Re-exported under the Windows engine's name.
 pub type UiaTree = A11yTree;
 

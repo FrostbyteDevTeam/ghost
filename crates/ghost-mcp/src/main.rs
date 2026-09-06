@@ -6,6 +6,7 @@ use ghost_session::{GhostSession, LocateMode, Target, TargetSource, WindowTarget
 
 mod audit;
 mod ext;
+mod realinput;
 use std::io::{BufRead, Write};
 use std::sync::OnceLock;
 
@@ -342,6 +343,9 @@ fn main() {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .init();
+    // Telling a human's keystroke from a program's is what makes the sentinel
+    // safe to act on, so the hooks go up before it starts sampling.
+    realinput::start();
     // Independent proof that the foreground is never taken: see audit.rs.
     audit::start();
     // Browsers left behind by servers that are gone (ghost_core::process::orphans):
@@ -755,6 +759,14 @@ fn dispatch_tool_inner<'a>(
             .as_ref()
             .filter(|t| !t.is_hidden() && session.is_background_only())
             .map(|t| (t.hwnd, t.pid, session.foreground_guard_begin()));
+        // ... and after the call, for as long as that window could still
+        // activate itself: the audit sentinel hands the foreground back even
+        // when nothing is in flight. Measured 2026-09-06: a browser Ghost had
+        // typed into took the foreground AFTER the verb answered and held it
+        // for 30 s, with the human's keystrokes going into the web page.
+        if let Some((hwnd, pid, _)) = guard.as_ref() {
+            audit::protect(*hwnd, *pid);
+        }
         // Route lean verbs first, fall through to legacy handle_tool for all others.
         let result = match name {
             "ghost_see" => handle_ghost_see(session, args).await,
@@ -2835,8 +2847,25 @@ async fn handle_ghost_assert(
             let expected = p["text"].as_str()
                 .ok_or("ghost_assert: value-equals/value-contains requires 'text'")?;
             let by = parse_by(p)?;
-            let el = session.find(by).await.map_err(|e| format!("assert failed: element not found - {e}"))?;
-            let actual = el.get_text();
+            // Read the window the agent is driving (window= or the anchor), the
+            // way every other verb does. Reading the human's foreground window
+            // instead was both wrong and a background-mode violation: it once
+            // returned a label's text for a field that had been filled.
+            let target = session.resolve_target(p["window"].as_str()).await.ok();
+            let actual = match target.as_ref() {
+                Some(t) => {
+                    let role = p["role"].as_str();
+                    session
+                        .window_value(t.hwnd, by, role)
+                        .await
+                        .map_err(|e| format!("assert failed: element not found - {e}"))?
+                }
+                None => session
+                    .find(by)
+                    .await
+                    .map_err(|e| format!("assert failed: element not found - {e}"))?
+                    .get_text(),
+            };
             let passed = if predicate == "value-equals" {
                 actual == expected
             } else {

@@ -34,6 +34,10 @@ once and behave the same on both. [Platform support](#platforms) ·
   instead of quietly taking the screen. Since 0.22 the policy is *locked* there:
   no tool call can raise it, so an agent cannot decide on its own to take your
   mouse. You can, by setting `GHOST_FOCUS_LOCK=off` in the server's environment.
+  And since 0.23 a window that grabs the foreground on its own - browsers do, on
+  their own accessibility calls - is handed straight back, so your typing keeps
+  going where you are looking. Measured on a real desktop with a person typing
+  throughout: 484 keystrokes, none delivered to the wrong window.
   ([how](#background-mode-agent-harness--computer-use))
 - **Never your window by accident.** The session remembers the last window the
   agent named or launched and every window-scoped verb targets it by default. The
@@ -501,6 +505,30 @@ whether it is locked; the server logs both at start.
     "env": { "GHOST_FOCUS_LOCK": "off", "GHOST_FOCUS_POLICY": "background" }
 }}}
 ```
+
+A locked policy still leaves one thing outside Ghost's control: an application
+can activate its OWN window, and Chromium does exactly that when an agent types
+into a page or clicks a button through the accessibility API. Nothing outside
+the browser can stop that call. So since 0.23 Ghost undoes it. The interference
+audit doubles as a sentinel: while a window it is driving could still activate
+itself, it checks the foreground every 25 ms and hands it straight back unless
+you chose that window yourself - by clicking it or alt-tabbing to it, which it
+can tell apart from typing because it watches for REAL input, not synthesized
+input. `ghost_session_state` reports how often that happened
+(`foreground_handed_back`).
+
+How well it works, measured with an independent observer while a person typed
+into another window for the whole run (`scripts/background-desktop-probe.mjs`,
+`scripts/interference-watch.ps1`):
+
+| | before 0.23 | 0.23 |
+| --- | --- | --- |
+| keystrokes delivered to the wrong window | 48 | **0 of 484** |
+| worst time a driven window held the foreground | 28 s | 20-100 ms |
+
+For zero activation rather than a brief one, let Ghost start the app: anything
+it launches lives on a hidden desktop with its own input queue and cannot take
+your foreground at all, and a browser it launches is driven over CDP.
 
 ```jsonc
 // Drive an app while the human keeps working. No flag needed: background is the default.

@@ -1,5 +1,62 @@
 # Changelog
 
+## [0.23.0] - measured on a real desktop, while a human types
+
+0.22 locked the background policy so no agent could turn it off. This release
+is about the part a lock cannot fix: a browser that activates ITSELF, and what
+that costs the person at the keyboard. It was measured rather than reasoned
+about, with an independent observer (`scripts/interference-watch.ps1`: WinEvent
+plus low-level keyboard and mouse hooks) watching a full verb set run against a
+visible Edge window on the real desktop while a stand-in human typed a known
+sentence into Notepad throughout (`scripts/background-desktop-probe.mjs`).
+
+The first run was damning, and nothing in Ghost reported it: the browser took
+the human's foreground and held it for 28 s, and 48 of their keystrokes went
+into the web page.
+
+- **The foreground sentinel.** The per-call guard added in 0.21.10 stops
+  watching when the call answers, so an activation a moment later was never
+  undone. The interference audit now also acts: every 25 ms while a window
+  Ghost is driving could still activate itself, it asks whether that window is
+  holding the foreground, and hands it back if the human did not choose it.
+  It is level-triggered, not edge-triggered - an earlier version watched for a
+  CHANGE, missed one edge, and went blind for 28 s.
+- **Ghost can now tell a human's keystroke from a program's.** `GetLastInputInfo`
+  counts `SendInput` exactly like a real key, so while anything was typing,
+  every foreground change looked like the human's - including the browser's own.
+  New `realinput` module: low-level hooks that record only REAL key, click and
+  Alt events. A person chooses a window by clicking it or alt-tabbing to it,
+  never by typing in another one, and that is now the rule the sentinel applies.
+  Without the hooks it does nothing rather than risk pulling a window away.
+- **Window state changes never activate.** Maximize goes through
+  `SetWindowPlacement` (which does not activate, and leaves Windows knowing the
+  window is maximized so a later restore works); minimize and restore use the
+  no-activate `ShowWindow` commands. `WM_SYSCOMMAND`/`SC_MAXIMIZE`, tried first,
+  made the browser activate itself for 3.4 s every time.
+- **A repeat offender is put behind the human's work** (`send_to_back`,
+  `SWP_NOACTIVATE`) instead of trading activations with it, and a fight pauses
+  the sentinel for 2.5 s rather than making it surrender for the session.
+- **`ghost_assert value-equals|value-contains` read the wrong window.** It
+  searched the human's foreground window instead of the one the agent is
+  driving, and returned a label's text for a field that had been filled
+  correctly. It now reads the targeted window like every other verb
+  (`GhostSession::window_value`), preferring the editable control when a label
+  shares its name.
+- `ghost_session_state` reports `foreground_handed_back`,
+  `foreground_hand_back_failures` and `sentinel_paused`.
+
+Measured on the final build, one run, real desktop, stand-in human typing
+throughout: **484 keystrokes, none delivered to the wrong window** (Ghost idle:
+0 stray; typing while Ghost ran the full verb set: 0 of 389; typing while Ghost
+worked in a window the human had just left: 0 of 46 and 0 of 49). Browser
+self-activations were handed back in 20 to 100 ms. Before this release the same
+probe lost 48 keystrokes and 28 s of foreground in a single phase.
+
+Known and not fixed here: `ghost_wait for=navigate` to a `file://` URL
+sometimes never sees the title change and spends its full timeout; a browser
+still activates itself briefly before the hand-back, which cannot be prevented
+from outside the browser (drive it on a hidden desktop or over CDP for zero).
+
 ## [0.22.0] - the operator holds the key
 
 Ghost's claim is that an agent uses the computer while the human keeps using

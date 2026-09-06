@@ -213,7 +213,7 @@ fn find_in_once(
 /// for a classic EDIT on a non-displayed desktop while the control's text is
 /// readable directly; the text is also what the proxy uses as the NAME after
 /// typing, so name-based lookups of edits are not stable there - use role.
-fn element_value(el: &UiaElement) -> String {
+pub(crate) fn element_value(el: &UiaElement) -> String {
     let v = el.get_text();
     if !v.is_empty() {
         return v;

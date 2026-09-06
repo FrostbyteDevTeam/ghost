@@ -619,6 +619,9 @@ mod tests {
         assert!(!should_hand_back(true, false, false, false));
     }
 
+    /// Windows-only: `protect` is a no-op where the audit does not run, so
+    /// there is nothing to register and nothing to match.
+    #[cfg(windows)]
     #[test]
     fn protection_matches_by_handle_and_by_process_and_expires() {
         let _serial = serial();

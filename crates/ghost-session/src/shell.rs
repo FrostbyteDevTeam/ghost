@@ -869,6 +869,11 @@ mod warm_tests {
     /// framed command, answers with the sentinel and the native exit code, and
     /// the whole exchange is fast once the process is up. Windows only (real
     /// PowerShell); the exit code comes from `cmd /c exit 3`, a native command.
+    ///
+    /// "Once the process is up" is established by a first exchange, not a
+    /// sleep: PowerShell's cold start on a fresh CI runner has taken 11-15 s
+    /// (three CI failures, 2026-09-05/06), and a fixed 1.5 s wait charged the
+    /// remainder to the command being timed.
     #[cfg(windows)]
     #[test]
     fn a_spare_driver_serves_one_framed_command_with_its_exit_code() {
@@ -878,9 +883,16 @@ mod warm_tests {
             .unwrap();
         rt.block_on(async {
             let mut sess = spawn_driver(None).expect("spawn driver");
-            // Let the child finish starting so the measurement below is the
-            // warm cost, not PowerShell's own start-up.
-            tokio::time::sleep(Duration::from_millis(1500)).await;
+            sess.nonce += 1;
+            let warmup = sentinel_token(&sess.secret, sess.nonce);
+            let frame = format!("{} {}\n", warmup, b64_encode(b"Write-Output warm-up"));
+            sess.stdin.write_all(frame.as_bytes()).await.unwrap();
+            sess.stdin.flush().await.unwrap();
+            let first = read_until_sentinel(&mut sess, &warmup, Duration::from_secs(90)).await;
+            assert!(
+                matches!(first, ReadOutcome::Done { .. }),
+                "the driver never answered its first command"
+            );
             let started = Instant::now();
             sess.nonce += 1;
             let token = sentinel_token(&sess.secret, sess.nonce);

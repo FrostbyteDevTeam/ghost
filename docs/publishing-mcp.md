@@ -80,12 +80,17 @@ third party access to an account, which an automated session must not do.
 | awesome-mcp-servers (punkpeye) | pull request, OS Automation section | PR #13724 open, mergeable |
 | mcpservers.org | web form, no login | submitted; review within 12 hours, confirmation to info@northtek.io |
 | Glama | indexes GitHub; `glama.json` (in repo) names the maintainer; claimed with the maintainer account. Glama builds the repo's `Dockerfile`, runs it in a sandbox and calls `tools/list`, which is what fills its tools list and quality score; the Dockerfile downloads the release matching the workspace version, so a new tag must have its release published before Glama's next build of that commit succeeds | listed: https://glama.ai/mcp/servers/hcu78gk1x6 (categories: OS Automation, Browser Automation, Shell Access); tools list and score appear after Glama's first successful Dockerfile build |
-| Smithery | `smithery mcp publish ghost-windows-x64.mcpb -n info-j5od/ghost` from the bundle directory after `smithery login` (the account namespace is `info-j5od`, not NORTHTEKDevs) | listed: https://smithery.ai/servers/info-j5od/ghost |
-| LobeHub marketplace | `npx -y @lobehub/market-cli login`, `github connect`, then `plugin publish https://github.com/NORTHTEKDevs/ghost` from the repo root (`lhm.plugin.json` must be in the working directory) | listed: https://lobehub.com/mcp/northtekdevs-ghost (northtekdevs-ghost@0.21.7) |
+| Smithery | `smithery mcp publish ghost-windows-x64.mcpb -n info-j5od/ghost` from the bundle directory after `smithery login` (the account namespace is `info-j5od`, not NORTHTEKDevs); re-run per release. Display name, description, homepage, repository link and icon are NOT read from the bundle: set them once under Settings > General on the server page (the CLI has no flags for them) | listed: https://smithery.ai/servers/info-j5od/ghost, 0.21.8, name/description/icon set |
+| LobeHub marketplace | first time: `npx -y @lobehub/market-cli login`, `github connect`, then `plugin publish https://github.com/NORTHTEKDevs/ghost` from the repo root; every release after that: bump `lhm.plugin.json` and run `npx -y @lobehub/market-cli plugin update` from the repo root (`publish` refuses an existing identifier) | listed: https://lobehub.com/mcp/northtekdevs-ghost (northtekdevs-ghost@0.21.8) |
 | mcp.so | website submission behind Sign In; the only submit path is a paid $39 "Pay and submit automatically" | declined: paid listing only, we do not pay for directory placement |
-| cursor.directory | cursor.directory/plugins/new scans the repo for Agent Plugins files (agent-plugins.org): root `plugin.json` + `mcp.json` (both in repo, both validate against the 1.0.0 schemas); no sign-in was required to submit | submitted: https://cursor.directory/plugins/ghost, hidden until their security scan finishes |
+| cursor.directory | cursor.directory/plugins/new scans the repo for Agent Plugins files (agent-plugins.org): root `plugin.json` + `mcp.json` (both in repo, both validate against the 1.0.0 schemas); no sign-in was required to submit | listed: https://cursor.directory/plugins/ghost (scan passed; name, homepage, keywords and logo set from Plugin options > Edit) |
 
-Every directory that accepts submissions now has one. The metadata files they
+Every directory that accepts submissions now has one. Two things the
+directories mirror live on GitHub itself and were brought in line with the
+0.21.7 framing: the repository description and topics (`gh repo edit`), which
+Glama, mcpservers.org and LobeHub had copied verbatim while stale. The
+repository social preview image (`assets/social-preview.png`) has no API and is
+uploaded by hand under Settings > Social preview. The metadata files they
 read (`glama.json`, `lhm.plugin.json`, `plugin.json`, `mcp.json`, the `.mcpb`
 bundles) live in the repo; `plugin.json` and `lhm.plugin.json` carry their own
 `version` field and are bumped by hand with the workspace version. `mcp.json`

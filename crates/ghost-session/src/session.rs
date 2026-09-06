@@ -1625,6 +1625,108 @@ impl GhostSession {
         }
     }
 
+    /// Snapshot for `foreground_guard_end`: the window the human has right now.
+    pub fn foreground_guard_begin(&self) -> isize {
+        crate::engine::system::foreground_window()
+    }
+
+    /// The background promise, enforced after the fact.
+    ///
+    /// Chromium activates its own window when a UIA action lands on one of its
+    /// windowless controls: a ValuePattern.SetValue on a web input or on the
+    /// address bar pulls the browser to the front whenever that process is
+    /// allowed to take the foreground, which it is right after the human used
+    /// it (measured 2026-09-05: the activation lands ~90 ms after SetValue,
+    /// before any fallback runs). Nothing outside the browser can prevent
+    /// that call, so it is undone: when `target_hwnd` holds the foreground
+    /// after a verb and the human had a different window before it, that
+    /// window is handed the foreground back through the attached-input path,
+    /// and the response reports `focus_guard`. `None` means nothing was taken.
+    pub async fn foreground_guard_end(
+        &self,
+        target_hwnd: isize,
+        target_pid: u32,
+        fg_before: isize,
+    ) -> Option<serde_json::Value> {
+        self.foreground_guard_end_within(target_hwnd, target_pid, fg_before, 0, 0).await
+    }
+
+    /// `foreground_guard_end` that keeps watching for `settle_ms`. A UIA call
+    /// activates synchronously, but a POSTED click or key is handled by the
+    /// target's own thread a few milliseconds after the verb has returned, so
+    /// the posting paths pass a short settle window and are checked until it
+    /// closes; the first observation of the theft ends the wait.
+    ///
+    /// "Taken" means the foreground moved to the target window OR to any other
+    /// window of the target's process: a browser's bubbles and menus are
+    /// separate top-level windows. The foreground goes back to `fg_before`,
+    /// unless that was itself one of the target's windows (a popup the browser
+    /// had raised a moment earlier) or cannot take it, in which case
+    /// `fallback_fg` - the last window the human chose, per the interference
+    /// audit - is used when the caller has one.
+    pub async fn foreground_guard_end_within(
+        &self,
+        target_hwnd: isize,
+        target_pid: u32,
+        fg_before: isize,
+        fallback_fg: isize,
+        settle_ms: u64,
+    ) -> Option<serde_json::Value> {
+        if target_hwnd == 0 || fg_before == 0 || fg_before == target_hwnd {
+            return None;
+        }
+        let is_targets = |h: isize| {
+            h != 0 && (h == target_hwnd || (target_pid != 0 && crate::engine::system::window_pid(h) == target_pid))
+        };
+        let deadline = std::time::Instant::now() + Duration::from_millis(settle_ms);
+        let taken_by = loop {
+            let now = crate::engine::system::foreground_window();
+            if now != fg_before && is_targets(now) {
+                break now;
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let started = std::time::Instant::now();
+        // Where the foreground belongs: the window the human had, unless that
+        // was already one of the target's own popups.
+        let mut dest = fg_before;
+        if is_targets(fg_before) && fallback_fg != 0 && !is_targets(fallback_fg) {
+            dest = fallback_fg;
+        }
+        let mut restored = crate::engine::uia::tree::ensure_foreground(dest, 250).unwrap_or(false);
+        if !restored {
+            // The attached-input hand-back can lose a race with the target's
+            // own activation; one more try after it has settled.
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            restored = crate::engine::uia::tree::ensure_foreground(dest, 250).unwrap_or(false);
+        }
+        if !restored && fallback_fg != 0 && fallback_fg != dest && !is_targets(fallback_fg) {
+            dest = fallback_fg;
+            restored = crate::engine::uia::tree::ensure_foreground(dest, 250).unwrap_or(false);
+        }
+        // The hand-back must never leave the human's window hidden.
+        let _ = crate::engine::uia::tree::restore_if_hidden(dest);
+        let title = core_list_windows()
+            .ok()
+            .and_then(|l| l.into_iter().find(|w| w.hwnd == dest).map(|w| w.name))
+            .unwrap_or_default();
+        Some(serde_json::json!({
+            "taken_by_target": true,
+            "taken_by": taken_by,
+            "restored": restored,
+            "restored_to": { "hwnd": dest, "title": title },
+            "ms": started.elapsed().as_millis() as u64,
+            "note": if restored {
+                "the target activated itself on the UIA action; the foreground was handed back to the window you had"
+            } else {
+                "the target activated itself on the UIA action and the hand-back did not confirm within 250 ms"
+            },
+        }))
+    }
+
     /// Click an element, then wait for `expected_text` to appear (or disappear) on screen.
     /// Uses scoped (foreground-window) search instead of full desktop describe walks.
     #[tracing::instrument(skip(self), fields(text = %expected_text, appears, timeout_ms))]
@@ -2214,6 +2316,10 @@ impl GhostSession {
         };
 
         let mut typed_via: &str = "";
+        // Set the moment a rung is seen to have taken the human's foreground
+        // (see foreground_guard_end); the hand-back happens right there, before
+        // any read-back wait, so the theft lasts milliseconds, not the call.
+        let mut focus_guard: Option<serde_json::Value> = None;
         let (verified, note): (Option<bool>, Option<&str>) = match action {
             "type" => {
                 let t = text.ok_or_else(|| GhostError::Vision("ghost_act: action=type requires text param".into()))?;
@@ -2234,6 +2340,7 @@ impl GhostSession {
                         tracing::debug!("ValuePattern type failed, trying posted keys: {e}");
                         rung = "";
                     }
+                    focus_guard = self.foreground_guard_end(hwnd_raw, win.pid, fg_before).await;
                 }
                 let (el, mut ok) = if rung.is_empty() { (el, false) } else { read_back_matches(el, t).await };
                 if !ok && !via_message {
@@ -2249,6 +2356,9 @@ impl GhostSession {
                         crate::engine::input::BackgroundClicker::send_char(target, ch).map_err(GhostError::Core)?;
                     }
                     rung = "posted_keys";
+                    if focus_guard.is_none() {
+                        focus_guard = self.foreground_guard_end_within(hwnd_raw, win.pid, fg_before, 0, 60).await;
+                    }
                     let (_el, ok2) = read_back_matches(el, t).await;
                     ok = ok2;
                     if !ok {
@@ -2310,7 +2420,10 @@ impl GhostSession {
                         other => other?,
                     }
                 }
+                // The 80 ms the pixel check needs anyway is also the settle a
+                // posted click needs before the target's thread has acted on it.
                 tokio::time::sleep(Duration::from_millis(80)).await;
+                focus_guard = self.foreground_guard_end(hwnd_raw, win.pid, fg_before).await;
                 let changed = verify_pixels(before);
                 let note = if fallback_uia {
                     Some("clicked via UIA Invoke (windowless control) — the window may have activated; check focus_preserved")
@@ -2353,7 +2466,7 @@ impl GhostSession {
         // Confirm we did not disturb the desktop.
         let fg_after = crate::engine::system::foreground_window();
         let cur_after = crate::engine::system::cursor_pos();
-        let focus_preserved = fg_before == fg_after;
+        let focus_preserved = fg_before == fg_after && focus_guard.is_none();
         let cursor_preserved = cursor_unchanged(cur_before, cur_after);
 
         let rect_json = rect.map(|(l, t, r, b)| serde_json::json!({"left": l, "top": t, "right": r, "bottom": b}))
@@ -2375,6 +2488,9 @@ impl GhostSession {
         }
         if let (Some(obj), Some(i)) = (out.as_object_mut(), index) {
             obj.insert("index".into(), serde_json::json!(i));
+        }
+        if let (Some(obj), Some(g)) = (out.as_object_mut(), focus_guard) {
+            obj.insert("focus_guard".into(), g);
         }
         Ok(out)
     }
@@ -2419,11 +2535,13 @@ impl GhostSession {
             }
         }
 
+        let focus_guard = self.foreground_guard_end_within(win_hwnd, win.pid, fg_before, 0, 60).await;
         let fg_after = crate::engine::system::foreground_window();
         let cur_after = crate::engine::system::cursor_pos();
         Ok(serde_json::json!({
             "ok": true, "mode": "background", "key": key, "window": win.name,
-            "focus_preserved": fg_before == fg_after,
+            "focus_preserved": fg_before == fg_after && focus_guard.is_none(),
+            "focus_guard": focus_guard,
             "cursor_preserved": cursor_unchanged(cur_before, cur_after),
             "verified": serde_json::Value::Null,
             "focused_control": !no_focused_control,

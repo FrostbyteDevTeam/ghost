@@ -737,6 +737,16 @@ fn dispatch_tool_inner<'a>(
             let result = enrich_not_found(session, result, args, t, None).await;
             return attach_target(session, result, prepared.target);
         }
+        // The background promise, enforced for every user-desktop verb: if the
+        // target takes the human's foreground during the call (Chromium activates
+        // itself on UIA actions, and on the first accessibility walk of a fresh
+        // window), hand it back and say so. The act/key paths do this the moment
+        // it happens; this catches everything else (walks, finds, waits).
+        let guard = prepared
+            .target
+            .as_ref()
+            .filter(|t| !t.is_hidden() && session.is_background_only())
+            .map(|t| (t.hwnd, t.pid, session.foreground_guard_begin()));
         // Route lean verbs first, fall through to legacy handle_tool for all others.
         let result = match name {
             "ghost_see" => handle_ghost_see(session, args).await,
@@ -751,6 +761,25 @@ fn dispatch_tool_inner<'a>(
             "ghost_query" => handle_ghost_query(session, args).await,
             // All other names (lean verbs with existing impls + all 48 legacy aliases).
             _ => handle_tool(session, name, args).await,
+        };
+        let result = match (guard, result) {
+            (Some((hwnd, pid, fg_before)), Ok(mut v)) => {
+                // Posting verbs are acted on by the target's thread after the
+                // verb returns; give those a short settle before deciding.
+                let settle = match name {
+                    "ghost_click_at" | "ghost_scroll" | "ghost_key" => 100,
+                    _ => 0,
+                };
+                let fallback = audit::last_human_foreground();
+                if let Some(g) = session.foreground_guard_end_within(hwnd, pid, fg_before, fallback, settle).await {
+                    if let Some(m) = v.as_object_mut() {
+                        m.entry("focus_guard").or_insert(g);
+                        m.insert("focus_preserved".into(), json!(false));
+                    }
+                }
+                Ok(v)
+            }
+            (_, r) => r,
         };
         let result = match prepared.target.as_ref() {
             Some(t) => enrich_not_found(session, result, args, t, None).await,
@@ -3164,7 +3193,7 @@ fn lean_tools_schema() -> Value {
           }}},
         // --- Action ---
         { "name": "ghost_act",
-          "description": "Find an element and act on it in one call. Target window = window= (anchored) or the session anchor. Under the default background policy the window is NEVER raised and the cursor never moves: click = UIA Invoke or a posted click, type = ValuePattern / WM_SETTEXT with read-back, and the response reports {verified, focus_preserved, cursor_preserved}. Works on covered windows, Chromium/Electron pages and hidden-desktop apps. Identify the element by name|role (description needs vision and a screen-facing window). verified=false = dispatched but nothing visibly changed: ghost_see before retrying. background=true is accepted for compatibility; it is already the default behaviour.",
+          "description": "Find an element and act on it in one call. Target window = window= (anchored) or the session anchor. Under the default background policy the window is NEVER raised and the cursor never moves: click = UIA Invoke or a posted click, type = ValuePattern / WM_SETTEXT with read-back, and the response reports {verified, focus_preserved, cursor_preserved}. Works on covered windows, Chromium/Electron pages and hidden-desktop apps. If a windowless control's own provider activates its window anyway (Chromium does on SetValue), the foreground is handed straight back to the window the human had and the response carries focus_guard. Identify the element by name|role (description needs vision and a screen-facing window). verified=false = dispatched but nothing visibly changed: ghost_see before retrying. background=true is accepted for compatibility; it is already the default behaviour.",
           "inputSchema": { "type": "object", "required": ["action"], "properties": {
               "name": { "type": "string" }, "role": { "type": "string" },
               "description": { "type": "string" }, "text": { "type": "string" },

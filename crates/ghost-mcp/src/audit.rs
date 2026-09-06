@@ -46,6 +46,11 @@ struct State {
     samples: u64,
     human_changes: u64,
     incidents: Vec<Incident>,
+    /// The window the human most recently chose themselves (a foreground
+    /// change with real input behind it). The foreground guard hands the
+    /// foreground back here when the window it recorded before a verb was
+    /// already one of the target's own popups.
+    last_human_hwnd: isize,
 }
 
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
@@ -120,6 +125,7 @@ fn observe(prev: &mut Option<isize>, hwnd: isize, title: String, idle_ms: u64) -
         None => None,
         Some(false) => {
             st.human_changes += 1;
+            st.last_human_hwnd = hwnd;
             None
         }
         Some(true) => {
@@ -142,6 +148,12 @@ fn observe(prev: &mut Option<isize>, hwnd: isize, title: String, idle_ms: u64) -
             Some(incident)
         }
     }
+}
+
+/// The last window the human chose themselves, or 0 before any human change
+/// has been seen this session.
+pub fn last_human_foreground() -> isize {
+    state().lock().unwrap_or_else(|p| p.into_inner()).last_human_hwnd
 }
 
 /// The tally, as reported by `ghost_stats` and `ghost_session_state`.

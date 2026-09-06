@@ -59,6 +59,23 @@ pub fn foreground_window_rect() -> Option<(i32, i32, i32, i32)> {
     window_rect(foreground_window())
 }
 
+/// Process id that owns a window, or 0 for no window. Lets the foreground
+/// guard recognise a target's own popups: a browser's bubbles and menus are
+/// separate top-level windows of the same process.
+pub fn window_pid(hwnd: isize) -> u32 {
+    if hwnd == 0 {
+        return 0;
+    }
+    let mut pid: u32 = 0;
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
+            HWND(hwnd as *mut _),
+            Some(&mut pid),
+        );
+    }
+    pid
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

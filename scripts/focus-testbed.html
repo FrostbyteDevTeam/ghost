@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Ghost Focus Testbed</title>
+<style>body{font:16px system-ui;padding:24px;max-width:640px} label{display:block;margin:12px 0 4px} input,textarea{width:100%;padding:6px;font:inherit} button{padding:8px 14px;margin:8px 8px 0 0}</style>
+</head>
+<body>
+<h1>Ghost Focus Testbed</h1>
+<label for="first">First name</label>
+<input id="first" name="first" placeholder="First name">
+<label for="notes">Notes</label>
+<textarea id="notes" name="notes" rows="3" placeholder="Notes"></textarea>
+<label for="rich">Rich editor</label>
+<div id="rich" contenteditable="true" role="textbox" aria-label="Rich editor" style="border:1px solid #888;min-height:48px;padding:6px"></div>
+<div>
+  <button id="save" onclick="document.getElementById('status').textContent='saved:'+document.getElementById('first').value">Save changes</button>
+  <button id="retitle" onclick="document.title='Retitled '+Date.now()">Retitle</button>
+  <a id="link" href="#anchor-target" onclick="document.getElementById('status').textContent='link'">Docs link</a>
+</div>
+<p id="status" aria-live="polite">status: idle</p>
+<script>
+  // React-style controlled input: only counts as changed if a real input event fired.
+  let inputEvents = 0;
+  for (const id of ['first','notes','rich']) {
+    document.getElementById(id).addEventListener('input', () => { inputEvents++; document.getElementById('events').textContent = 'input events: ' + inputEvents; });
+  }
+</script>
+<p id="events">input events: 0</p>
+</body>
+</html>

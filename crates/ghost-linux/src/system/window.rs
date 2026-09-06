@@ -82,3 +82,10 @@ mod tests {
         assert!(window_rect(0).is_none());
     }
 }
+
+/// Process id that owns a window. Mirrors the Windows engine; the foreground
+/// guard that uses it never runs on Linux (the background policy is not
+/// enforced there), so this is the honest placeholder.
+pub fn window_pid(_hwnd: isize) -> u32 {
+    0
+}

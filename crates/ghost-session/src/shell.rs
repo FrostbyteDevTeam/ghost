@@ -94,6 +94,29 @@ fn cwd_prefix(cwd: &str) -> String {
     format!("Set-Location -LiteralPath '{}'; ", cwd.replace('\'', "''"))
 }
 
+/// Give a shell process a console that is never shown.
+///
+/// The MCP server has no console of its own (its host starts it on pipes), so
+/// a shell spawned plainly has none either - and every console PROGRAM that
+/// shell then runs (node, python, cargo, cmd) gets a brand-new visible console
+/// from Windows, which on Windows 11 is a Windows Terminal window that takes
+/// the human's foreground for as long as the program runs. Measured
+/// 2026-09-05: a `node` child popped a window titled with its own path and
+/// held the foreground. `CREATE_NO_WINDOW` gives the shell an invisible
+/// console instead; its children inherit that one and never create a window.
+/// Output is piped regardless, so nothing is lost.
+fn no_console_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = command;
+    }
+}
+
 /// Start one persistent driver process (PowerShell here, bash on Linux).
 /// Shared by `op=open` sessions and the warm spare.
 fn spawn_driver(cwd: Option<&str>) -> Result<ShellSession> {
@@ -118,6 +141,7 @@ fn spawn_driver(cwd: Option<&str>) -> Result<ShellSession> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    no_console_window(&mut command);
 
     let mut child = command
         .spawn()
@@ -740,6 +764,7 @@ fn build_oneshot(shell: &str, cmd: &str) -> Result<Command> {
             )))
         }
     };
+    no_console_window(&mut c);
     // Reap the shell's own process tree isn't attempted here; grandchildren of a
     // Start-Process launch are intentionally left running.
     c.kill_on_drop(true);

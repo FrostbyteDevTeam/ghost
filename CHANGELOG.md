@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.21.10] - the background promise, enforced
+
+Two ways Ghost was still taking the human's keyboard, both measured on an
+off-screen browser and a console-less server so nothing on the user's desktop
+was touched, both fixed.
+
+- **A Chromium window that activates itself is put back.** Chromium answers a
+  UIA `SetValue` on a web input or the address bar, an `Invoke` on a page
+  button, and a posted click by activating its own window whenever Windows
+  allows it, which it does right after the human last used that browser.
+  Nothing outside the browser can prevent that call, so Ghost now undoes it:
+  the foreground is watched around every user-desktop verb (immediately after
+  the UIA primitive inside `ghost_act` and `ghost_key`, with a short settle
+  for posted input, and once more around the whole call in the dispatcher);
+  when the target, or any window of its process such as a popup, takes the
+  foreground, it is handed back to the window the human had through the
+  attached-input path, in 30 to 50 ms, and the response carries
+  `focus_preserved: false` plus `focus_guard {taken_by, restored,
+  restored_to, ms}`. If the window the human had was itself one of the
+  target's popups, the hand-back goes to the last window the human chose
+  (the interference audit now remembers it).
+- **`ghost_shell` children no longer open a terminal.** The server has no
+  console, so a plainly spawned shell had none, and every console program it
+  ran got a new Windows Terminal window that took the foreground for the
+  length of the run: node, python, cargo, cmd, all of them. Shells are now
+  created with `CREATE_NO_WINDOW`, an invisible console the children inherit.
+  Measured with `scripts/shell-console-probe.mjs`: nine foreground changes in
+  seven seconds before, zero after; output unchanged.
+- `scripts/focus-probe.mjs` + `scripts/focus-watch.ps1` reproduce the browser
+  measurement against any `ghost-mcp` binary on a throwaway Edge profile.
+
 ## [0.21.9] - faster where it was actually slow
 
 Measured first: a session of 368 Ghost calls showed the server's own time at

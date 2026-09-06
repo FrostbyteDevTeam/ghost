@@ -508,11 +508,21 @@ ghost_act { "window": "Comet", "name": "Post", "action": "click" }      // a win
   `WM_MOUSEWHEEL` (scroll). These do not activate the window.
 - **Windowless controls, without the screen.** UWP/WinUI/Chromium/Electron controls
   have no window handle. Ghost drives them with UI Automation patterns - `Invoke` for
-  a click, `ValuePattern` for typing - which web content services without raising the
-  window (measured on Chrome: a page button clicked and a page `<input>` filled, with
-  input events firing, `focus_preserved: true`). Views-level chrome such as the
-  address bar can still activate; `focus_preserved` reports the truth. Posted single
-  keys reach the page's focused element.
+  a click, `ValuePattern` for typing. Chromium answers some of these by activating
+  its own window when Windows lets it (right after you used that browser): measured
+  on Edge, a `SetValue` on a web input or the address bar, an `Invoke` on a page
+  button and a posted click all pulled the window forward within ~90 ms. Since
+  0.21.10 that is undone on the spot: Ghost watches the foreground around every
+  user-desktop verb, and when the target or any window of its process takes it,
+  hands it back to the window you had, in 30 to 50 ms, and reports
+  `focus_preserved: false` with a `focus_guard` record saying so. Posted single
+  keys reach the page's focused element and do not activate anything.
+- **Shell children never open a terminal.** The MCP server has no console, so a
+  shell started plainly has none either, and every console program it ran (node,
+  python, cargo, cmd) got a brand-new Windows Terminal window that took the
+  foreground for the length of the run. `ghost_shell` now creates its shells with
+  an invisible console; children inherit it and no window ever appears. Measured:
+  nine foreground changes in seven seconds before, zero after, output unchanged.
 - **Verified even while occluded.** `type` is confirmed by reading the control's
   value back; `click` by a `PrintWindow` before/after delta that renders a window
   that isn't visible. Every response carries `verified`, `focus_preserved`,

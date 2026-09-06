@@ -1,0 +1,3 @@
+# The Dockerfile only needs Cargo.toml; keep the build context tiny.
+*
+!Cargo.toml

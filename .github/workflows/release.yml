@@ -98,6 +98,7 @@ jobs:
           Copy-Item target/release/ghost-mcp.exe bundle/
           Copy-Item LICENSE bundle/
           Copy-Item README.md bundle/
+          Copy-Item assets/icon.png bundle/
           npx --yes @anthropic-ai/mcpb@2.1.2 validate bundle/manifest.json
           npx --yes @anthropic-ai/mcpb@2.1.2 pack bundle ghost-windows-x64.mcpb
           (Get-FileHash ghost-windows-x64.mcpb -Algorithm SHA256).Hash.ToLower() `
@@ -167,7 +168,7 @@ jobs:
           jq --arg v "$version" --arg e 'ghost-mcp' --arg p 'linux' \
             '.version = $v | .server.entry_point = $e | .server.mcp_config.command = ("${__dirname}/" + $e) | .compatibility.platforms = [$p]' \
             mcpb/manifest.template.json > bundle/manifest.json
-          cp target/release/ghost-mcp LICENSE README.md bundle/
+          cp target/release/ghost-mcp LICENSE README.md assets/icon.png bundle/
           chmod +x bundle/ghost-mcp
           npx --yes @anthropic-ai/mcpb@2.1.2 validate bundle/manifest.json
           npx --yes @anthropic-ai/mcpb@2.1.2 pack bundle ghost-linux-x86_64.mcpb

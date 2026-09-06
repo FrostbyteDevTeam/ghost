@@ -144,21 +144,43 @@ impl GhostSession {
         register_emergency_stop().map_err(GhostError::Core)?;
         let tree = UiaTree::new().map_err(GhostError::Core)?;
 
-        // Log which vision providers are configured (presence only, never values).
-        // Treat empty/whitespace-only values the same as unset - an empty key causes
-        // confusing provider 500s rather than a clear error.
-        let nvidia_ok = env_key_is_set("NVIDIA_API_KEY");
-        let anthropic_ok = env_key_is_set("ANTHROPIC_API_KEY");
-        let provider_override = std::env::var("GHOST_VISION_PROVIDER").ok();
-        if nvidia_ok || anthropic_ok {
+        // Report the optional built-in vision tier (presence only, never values).
+        // Ghost needs no key: the model driving it reads ghost_see and
+        // ghost_screenshot itself. A key only powers the *_by_description tools.
+        // Every variable vision.rs honours is checked, so a user who configured
+        // an OpenAI-compatible endpoint is not told the tier is off. Empty or
+        // whitespace-only values count as unset - an empty key causes confusing
+        // provider 500s rather than a clear error.
+        let mut configured: Vec<&str> = Vec::new();
+        for key in [
+            "GHOST_VISION_API_KEY",
+            "OPENAI_API_KEY",
+            "NVIDIA_API_KEY",
+            "ANTHROPIC_API_KEY",
+        ] {
+            if env_key_is_set(key) {
+                configured.push(key);
+            }
+        }
+        if std::env::var("GHOST_VISION_BASE_URL")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+        {
+            configured.push("GHOST_VISION_BASE_URL");
+        }
+        if configured.is_empty() {
             eprintln!(
-                "[ghost-session] vision providers configured: NVIDIA_API_KEY={} ANTHROPIC_API_KEY={} GHOST_VISION_PROVIDER={}",
-                if nvidia_ok { "SET" } else { "unset" },
-                if anthropic_ok { "SET" } else { "unset" },
-                provider_override.as_deref().unwrap_or("unset (auto-detect)"),
+                "[ghost-session] built-in vision tier: off. Not needed - the model driving Ghost reads ghost_see and ghost_screenshot itself. Only ghost_locate_by_description, ghost_click_by_description and ghost_type_by_description use this tier; to enable it set GHOST_VISION_API_KEY (any OpenAI-compatible endpoint, with GHOST_VISION_BASE_URL and GHOST_VISION_MODEL), OPENAI_API_KEY, NVIDIA_API_KEY or ANTHROPIC_API_KEY."
             );
         } else {
-            eprintln!("[ghost-session] WARNING: no vision API key configured; ghost_locate_by_description / ghost_click_by_description / ghost_type_by_description will fail. Set NVIDIA_API_KEY or ANTHROPIC_API_KEY.");
+            eprintln!(
+                "[ghost-session] built-in vision tier: on ({} set; GHOST_VISION_PROVIDER={})",
+                configured.join(", "),
+                std::env::var("GHOST_VISION_PROVIDER")
+                    .ok()
+                    .as_deref()
+                    .unwrap_or("auto"),
+            );
         }
 
         Ok(Self {

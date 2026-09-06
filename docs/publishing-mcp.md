@@ -8,6 +8,22 @@ agent or user finds Ghost without already knowing it exists.
 
 - [`server.json`](../server.json) - the registry manifest (name, title, description,
   repository, version, website).
+- [`mcpb/manifest.template.json`](../mcpb/manifest.template.json) - the MCP Bundle
+  manifest; the release workflow fills in version, entry point and platform and packs
+  it with the binary and `assets/icon.png`.
+- [`Dockerfile`](../Dockerfile) - headless image for registries that build and
+  introspect servers (Glama). Downloads the release matching the workspace version
+  and verifies its sha256; not an install path for people.
+- [`plugin.json`](../plugin.json) + [`mcp.json`](../mcp.json) - Agent Plugins 1.0.0
+  manifests (cursor.directory and other plugin scanners).
+- [`glama.json`](../glama.json) (Glama maintainers) and
+  [`lhm.plugin.json`](../lhm.plugin.json) (LobeHub identity).
+- [`assets/`](../assets) - `icon.png` (bundles, directories), `ghost.ico` (embedded
+  in the Windows executables by `build.rs`), `social-preview.png` (GitHub's
+  repository social preview; uploaded by hand in repository settings).
+
+Version lives in four places by hand: `Cargo.toml` `[workspace.package]`,
+`server.json`, `plugin.json`, `lhm.plugin.json`. Bump all four in the release commit.
 
 The committed file is **listing-only** (name, description, repository, version);
 the installable part is added at publish time. The registry's package types are
@@ -63,7 +79,7 @@ third party access to an account, which an automated session must not do.
 | PulseMCP | imports the official registry; own submissions paused | automatic |
 | awesome-mcp-servers (punkpeye) | pull request, OS Automation section | PR #13724 open, mergeable |
 | mcpservers.org | web form, no login | submitted; review within 12 hours, confirmation to info@northtek.io |
-| Glama | indexes GitHub; `glama.json` (in repo) names the maintainer; claimed with the maintainer account | listed: https://glama.ai/mcp/servers/hcu78gk1x6 (categories: OS Automation, Browser Automation, Shell Access) |
+| Glama | indexes GitHub; `glama.json` (in repo) names the maintainer; claimed with the maintainer account. Glama builds the repo's `Dockerfile`, runs it in a sandbox and calls `tools/list`, which is what fills its tools list and quality score; the Dockerfile downloads the release matching the workspace version, so a new tag must have its release published before Glama's next build of that commit succeeds | listed: https://glama.ai/mcp/servers/hcu78gk1x6 (categories: OS Automation, Browser Automation, Shell Access); tools list and score appear after Glama's first successful Dockerfile build |
 | Smithery | `smithery mcp publish ghost-windows-x64.mcpb -n info-j5od/ghost` from the bundle directory after `smithery login` (the account namespace is `info-j5od`, not NORTHTEKDevs) | listed: https://smithery.ai/servers/info-j5od/ghost |
 | LobeHub marketplace | `npx -y @lobehub/market-cli login`, `github connect`, then `plugin publish https://github.com/NORTHTEKDevs/ghost` from the repo root (`lhm.plugin.json` must be in the working directory) | listed: https://lobehub.com/mcp/northtekdevs-ghost (northtekdevs-ghost@0.21.7) |
 | mcp.so | website submission behind Sign In; the only submit path is a paid $39 "Pay and submit automatically" | declined: paid listing only, we do not pay for directory placement |

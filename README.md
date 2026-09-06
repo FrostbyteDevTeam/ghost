@@ -259,6 +259,11 @@ stdio server.
 Ghost is also listed in the [MCP registry](https://registry.modelcontextprotocol.io)
 as `io.github.NORTHTEKDevs/ghost` for clients that install from there.
 
+The repo's `Dockerfile` builds a headless image (`docker build -t ghost-mcp .`) that
+answers `initialize` and `tools/list` with no display; registries and CI use it to
+introspect the server. A container has no windows to drive, so it is not an install
+path for real use.
+
 **How an agent uses it.** The loop is look, act, confirm:
 
 1. `ghost_see window="Invoice Editor"` - every element in the window with its name,

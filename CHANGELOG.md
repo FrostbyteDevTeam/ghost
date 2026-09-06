@@ -1,14 +1,35 @@
 # Changelog
 
-## [Unreleased]
+## [0.21.8] - listed everywhere, described honestly
 
+- **The server no longer nags for a vision key.** Every start printed
+  `WARNING: no vision API key configured ... Set NVIDIA_API_KEY or
+  ANTHROPIC_API_KEY`, which contradicted the README (the model driving Ghost
+  does the looking; no key is needed) and only checked two of the five
+  variables `vision.rs` honours, so a user with `GHOST_VISION_API_KEY` set was
+  told the tier was off. The line now reports the optional tier as on or off,
+  names every variable that enables it, and says it is not needed.
+- **The three `*_by_description` tool descriptions say what is true.** They
+  are the optional vision tier, they list all accepted keys instead of
+  "Requires NVIDIA_API_KEY or ANTHROPIC_API_KEY", and they point at the
+  keyless verbs first. Registries that score tool definitions read these.
+- **Dockerfile for headless introspection.** Registries such as Glama build
+  a server from its Dockerfile, run it in a sandbox and call `tools/list` to
+  populate the tools list and quality score; without one Ghost showed zero
+  tools. The image downloads the Linux release matching the workspace
+  version, verifies its sha256, runs as an unprivileged user with
+  `GHOST_SHELL=off`, and answers `initialize` and `tools/list` with no display
+  and no accessibility bus (verified locally with `docker run`). It is not a
+  way to drive a desktop; it exists so the server can be inspected.
 - **Agent Plugins manifests.** Root `plugin.json` and `mcp.json` follow the
   Agent Plugins 1.0.0 standard (agent-plugins.org) so plugin scanners such as
   cursor.directory detect the MCP server; both validate against the canonical
   schemas. `mcp.json` names the bare `ghost-mcp` command, resolved from PATH.
-- **Directory listings.** Ghost is now listed on Glama, Smithery, LobeHub and
-  cursor.directory in addition to the official MCP registry; the status table
-  in `docs/publishing-mcp.md` records the mechanism for each.
+- **Directory listings.** Ghost is now listed on Glama, Smithery, LobeHub,
+  mcpservers.org and cursor.directory in addition to the official MCP
+  registry; the status table in `docs/publishing-mcp.md` records the
+  mechanism for each. The GitHub repository description and topics were
+  brought in line with the 0.21.7 framing, since every directory mirrors them.
 
 ## [0.21.7] - the whole desktop, not just eyes
 

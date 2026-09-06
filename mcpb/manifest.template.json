@@ -25,7 +25,8 @@
       "command": "${__dirname}/ghost-mcp",
       "args": [],
       "env": {
-        "GHOST_VISION_API_KEY": "${user_config.vision_api_key}"
+        "GHOST_VISION_API_KEY": "${user_config.vision_api_key}",
+        "GHOST_FOCUS_LOCK": "${user_config.lock_focus_policy}"
       }
     }
   },
@@ -45,6 +46,13 @@
     ]
   },
   "user_config": {
+    "lock_focus_policy": {
+      "type": "boolean",
+      "title": "Keep Ghost off your mouse and keyboard (recommended)",
+      "description": "On: the agent can never raise Ghost's focus policy above 'background', so it drives apps on a hidden desktop and browsers over CDP while you keep working. Off: the agent may switch to 'prefer_background' or 'foreground' and drive your real cursor and keyboard.",
+      "default": true,
+      "required": false
+    },
     "vision_api_key": {
       "type": "string",
       "title": "Vision API key for the optional built-in tier (not needed for agents)",

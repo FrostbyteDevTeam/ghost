@@ -20,6 +20,16 @@ pub fn owns(name: &str) -> bool {
         || matches!(name, "ghost_focus_policy" | "ghost_set_focus_policy" | "ghost_session_state")
 }
 
+/// One sentence an agent can act on, attached to every focus-policy report.
+#[cfg(windows)]
+fn focus_lock_note(locked: bool) -> &'static str {
+    if locked {
+        "locked: no tool call can raise this process above background, so plan on the routes that need no real input (ghost_window op=launch, ghost_browser_launch, anchored verbs). Only the operator unlocks it, with GHOST_FOCUS_LOCK=off in the server environment."
+    } else {
+        "unlocked by the operator: prefer_background/foreground may be set, and they drive the user's real cursor and keyboard. Raise only for a target with no background path and set background back afterwards."
+    }
+}
+
 pub async fn dispatch(
     session: &GhostSession,
     method: &str,
@@ -28,12 +38,16 @@ pub async fn dispatch(
     match method {
         // ---- focus policy and self-check -----------------------------------
         #[cfg(windows)]
-        "ghost_focus_policy" => Ok(json!({ "policy": session.focus_policy() })),
+        "ghost_focus_policy" => Ok(json!({
+            "policy": session.focus_policy(),
+            "locked": session.focus_locked(),
+            "note": focus_lock_note(session.focus_locked()),
+        })),
         #[cfg(windows)]
         "ghost_set_focus_policy" => {
             let policy = req_str(p, "policy")?;
             let applied = session.set_focus_policy(&policy).map_err(|e| e.to_string())?;
-            Ok(json!({ "policy": applied }))
+            Ok(json!({ "policy": applied, "locked": session.focus_locked() }))
         }
         #[cfg(windows)]
         "ghost_session_state" => {
@@ -45,6 +59,7 @@ pub async fn dispatch(
                 "foreground_window": snap.foreground_title,
                 "cursor": [snap.cursor.0, snap.cursor.1],
                 "policy": session.focus_policy(),
+                "focus_locked": session.focus_locked(),
                 "interference_audit": crate::audit::snapshot(),
             }))
         }
@@ -395,15 +410,15 @@ pub fn schemas() -> Vec<Value> {
     {
         tools.extend([
             json!({ "name": "ghost_focus_policy",
-              "description": "Report the current focus policy: background (default, never touches the user's screen), prefer_background, or foreground.",
+              "description": "Report the focus policy (background = never touches the user's mouse, keyboard or foreground; prefer_background; foreground) and whether it is locked. locked:true (the default) means this process cannot be raised above background by any tool call - only the operator can, with GHOST_FOCUS_LOCK=off in the server's environment - so do not plan on real input: launch apps with ghost_window op=launch and browsers with ghost_browser_launch and drive them anchored.",
               "inputSchema": { "type": "object", "properties": {}}}),
             json!({ "name": "ghost_set_focus_policy",
-              "description": "Set the focus policy. 'background' (the default) makes any cursor/keyboard/foreground-stealing call fail instead of taking over the machine. Raise to 'prefer_background' or 'foreground' ONLY for a target with no background path, and set it back afterwards.",
+              "description": "Set the focus policy. 'background' is always accepted and is the default. 'prefer_background' and 'foreground' let Ghost drive the user's real cursor and keyboard and are REFUSED while the lock is on (the default; see ghost_focus_policy). Do not retry a refusal: the error names the route that needs no policy (ghost_window op=launch, ghost_browser_launch). When the operator has unlocked the process, raise it only for a target with no background path and set it back afterwards.",
               "inputSchema": { "type": "object", "required": ["policy"], "properties": {
                   "policy": { "type": "string", "enum": ["background", "prefer_background", "foreground"] }
               }}}),
             json!({ "name": "ghost_session_state",
-              "description": "The window the user is working in (handle + title) and the real cursor position. Call before/after a batch of actions to verify nothing was disturbed; compare foreground_hwnd, since titles change on their own.",
+              "description": "The window the user is working in (handle + title), the real cursor position, the focus policy and lock, and the interference audit (foreground changes with no human input while a tool was in flight). Call before/after a batch of actions to verify nothing was disturbed; compare foreground_hwnd, since titles change on their own.",
               "inputSchema": { "type": "object", "properties": {}}}),
             json!({ "name": "ghost_desktop_create",
               "description": "Create an isolated Windows desktop - apps launched onto it NEVER appear on the user's screen (the desktop-app equivalent of headless). Usually unnecessary: under the default background policy ghost_window op=launch already starts apps on the hidden desktop 'auto' and the ordinary verbs (ghost_see/find/act/key/scroll with window=<title>) drive them there. UIA, window messages, and capture all work; real SendInput does not (OS boundary).",

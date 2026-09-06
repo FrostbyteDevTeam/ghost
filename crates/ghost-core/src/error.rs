@@ -24,7 +24,7 @@ pub enum CoreError {
     #[error("Target window is gone")]
     WindowGone,
 
-    #[error("Window '{name}' is minimized; restore it first (ghost_window op=focus name={name})")]
+    #[error("Window '{name}' is minimized; restore it first without taking the user's focus (ghost_window op=state name={name} state=restore)")]
     WindowMinimized { name: String },
 
     #[error("Could not confirm foreground for window: {window}")]
@@ -32,10 +32,13 @@ pub enum CoreError {
 
     #[error("Element not actionable in background mode: {what}")]
     NotActionableInBackground { what: &'static str },
-    #[error("'{action}' has no background path and the focus policy is 'background'; call ghost_set_focus_policy with 'prefer_background' or 'foreground' to allow real input")]
+    #[error("'{action}' has no background path on the user's desktop and the focus policy is 'background'. Work where no policy is needed: launch the app with ghost_window op=launch (it lands on a hidden desktop) or the browser with ghost_browser_launch, then drive the anchored window. Real input on the user's desktop is the operator's call: GHOST_FOCUS_LOCK=off in the server environment, then ghost_set_focus_policy")]
     NoBackgroundPath { action: &'static str },
 
-    #[error("no message-postable text control in that window; on an isolated desktop there is no real keyboard input to fall back to, so this target cannot be typed into. Drive it on the user's desktop with the 'foreground' focus policy instead")]
+    #[error("focus policy is locked to 'background'; '{requested}' would let this process take the user's mouse, keyboard or foreground. Work where no policy is needed: launch the app with ghost_window op=launch (it lands on a hidden desktop) or the browser with ghost_browser_launch, then drive the anchored window. Only the operator can hand over real input, with GHOST_FOCUS_LOCK=off (and optionally GHOST_FOCUS_POLICY) in the MCP server's environment")]
+    FocusLocked { requested: &'static str },
+
+    #[error("no message-postable text control in that window; on an isolated desktop there is no real keyboard input to fall back to, so this target cannot be typed into. Try ghost_act type with the control's name (UIA), or for a browser the CDP route (ghost_browser_launch + ghost_tab_type); real keyboard input on the user's desktop needs the operator's GHOST_FOCUS_LOCK=off and the 'foreground' policy")]
     NoTextControl,
 
     #[error("typed {text:?} but the control's value did not change; the keystrokes did not land")]

@@ -60,11 +60,27 @@ impl GhostSession {
         "background"
     }
 
+    /// Whether the policy can be raised above `background` from inside this
+    /// process. Locked unless the operator set `GHOST_FOCUS_LOCK=off` in the
+    /// server's environment; an agent cannot change it.
+    #[cfg(windows)]
+    pub fn focus_locked(&self) -> bool {
+        ghost_core::focus::locked()
+    }
+
+    /// Off Windows there is no switchable policy at all, which for a caller is
+    /// the same as a lock that is never opened.
+    #[cfg(not(windows))]
+    pub fn focus_locked(&self) -> bool {
+        true
+    }
+
     /// Change the focus policy for this process.
     ///
     /// `background` (the default) makes every screen-stealing primitive fail
-    /// rather than take over the user's cursor. Raise it only for a target that
-    /// genuinely has no background path, and set it back afterwards.
+    /// rather than take over the user's cursor, and is always accepted. The
+    /// other two are refused while the operator's lock is on (the default);
+    /// the error says where the work can be done without a policy change.
     #[cfg(windows)]
     pub fn set_focus_policy(&self, policy: &str) -> Result<&'static str> {
         let p: ghost_core::focus::FocusPolicy = policy.parse().map_err(|_| {
@@ -72,7 +88,7 @@ impl GhostSession {
                 "unknown focus policy '{policy}'; use background, prefer_background, or foreground"
             ))
         })?;
-        ghost_core::focus::set_policy(p);
+        ghost_core::focus::set_policy(p).map_err(GhostError::Core)?;
         Ok(p.as_str())
     }
 

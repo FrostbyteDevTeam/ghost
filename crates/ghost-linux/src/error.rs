@@ -47,6 +47,12 @@ pub enum CoreError {
     #[error("Element not actionable in background mode: {what}")]
     NotActionableInBackground { what: &'static str },
 
+    /// Same shape as the Windows engine's: the focus policy is locked to
+    /// background and a caller asked to raise it. On Linux the policy is not
+    /// switchable at all, so the shared layer can report the same refusal.
+    #[error("focus policy is locked to 'background'; '{requested}' would let this process take the user's mouse, keyboard or foreground. Work where no policy is needed: launch the app with ghost_window op=launch or the browser with ghost_browser_launch, then drive the anchored window. Only the operator can hand over real input, with GHOST_FOCUS_LOCK=off in the MCP server's environment")]
+    FocusLocked { requested: &'static str },
+
     // ---------------------------------------------------------------- Linux
 
     /// A platform call failed: D-Bus, AT-SPI, X11 or portal.
@@ -114,6 +120,7 @@ mod tests {
         let _ = CoreError::WindowMinimized { name: "n".into() };
         let _ = CoreError::ProcessNotFound { name: "p".into() };
         let _ = CoreError::NotActionableInBackground { what: "w" };
+        let _ = CoreError::FocusLocked { requested: "foreground" };
     }
 
     #[test]

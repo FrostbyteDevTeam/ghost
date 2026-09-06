@@ -51,6 +51,10 @@ class GhostClient:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            # The bench measures the foreground paths on purpose; since 0.22 an
+            # agent-facing server is locked to background unless the operator
+            # says otherwise, and the bench is the operator here.
+            env={**os.environ, "GHOST_FOCUS_LOCK": "off"},
         )
         self._id = 0
         self._send(

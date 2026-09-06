@@ -637,7 +637,8 @@ mod tests {
     #[test]
     fn creating_a_desktop_binds_a_worker_and_exempts_it_from_the_focus_policy() {
         let _serial = crate::focus::policy_test_lock();
-        crate::focus::set_policy(crate::focus::FocusPolicy::Background);
+        crate::focus::set_policy(crate::focus::FocusPolicy::Background)
+            .expect("background is always allowed");
         let d = DesktopSession::create("unit").expect("create desktop");
         assert!(d.name().starts_with("ghost-"));
         assert!(d.name().ends_with("unit"), "{}", d.name());

@@ -31,8 +31,9 @@ once and behave the same on both. [Platform support](#platforms) ·
   starts (an app, a windowed browser) is born on a hidden desktop that has its own
   input queue and cannot take your foreground, and the ordinary verbs drive it there
   by window title. A call that truly has no background path fails naming the action
-  instead of quietly taking the screen. Raise the policy per target with
-  `ghost_set_focus_policy` when you actually want real input.
+  instead of quietly taking the screen. Since 0.22 the policy is *locked* there:
+  no tool call can raise it, so an agent cannot decide on its own to take your
+  mouse. You can, by setting `GHOST_FOCUS_LOCK=off` in the server's environment.
   ([how](#background-mode-agent-harness--computer-use))
 - **Never your window by accident.** The session remembers the last window the
   agent named or launched and every window-scoped verb targets it by default. The
@@ -479,10 +480,27 @@ while you keep working in another window.
 Since 0.19 this is the default and it is enforced. The process-wide focus policy
 starts at `background`, and every primitive that could only work by taking the real
 cursor or foreground window is gated behind it. There is no silent fallback: a call
-with no background path returns an error naming the action and the policy that would
-unblock it. Set `GHOST_FOCUS_POLICY` in the server env, or call
-`ghost_set_focus_policy` for a target that genuinely needs real input, and set it
-back afterwards. `ghost_focus_policy` reports the current setting.
+with no background path returns an error naming the action and the route that
+needs no policy change (launch the app on the hidden desktop, or the browser over
+CDP).
+
+Since 0.22 the policy is also **locked** there. A default is only a promise if the
+agent cannot flip it, and until 0.22 any agent could call `ghost_set_focus_policy
+foreground` the moment a background action was refused, which is exactly when a
+human notices Ghost moving the mouse. Now that call is refused too, with an error
+that says so. The key is the operator's, not the agent's: set
+`GHOST_FOCUS_LOCK=off` in the MCP server's environment (the host config you
+write) to allow `prefer_background` and `foreground` again, and optionally
+`GHOST_FOCUS_POLICY` to start there. `ghost_focus_policy` reports the policy and
+whether it is locked; the server logs both at start.
+
+```jsonc
+// Only if you WANT an agent to be able to drive your real mouse and keyboard:
+{ "mcpServers": { "ghost": {
+    "command": "ghost-mcp",
+    "env": { "GHOST_FOCUS_LOCK": "off", "GHOST_FOCUS_POLICY": "background" }
+}}}
+```
 
 ```jsonc
 // Drive an app while the human keeps working. No flag needed: background is the default.

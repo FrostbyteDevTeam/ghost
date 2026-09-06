@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.22.0] - the operator holds the key
+
+Ghost's claim is that an agent uses the computer while the human keeps using
+it. The 0.21 line made every screen-stealing primitive refuse under the
+default `background` policy; this release makes sure nothing an agent can call
+turns that default off, and closes the last two paths that could move the
+human's focus under it.
+
+- **The focus policy is locked by default.** `ghost_set_focus_policy` accepts
+  `background` and refuses `prefer_background` and `foreground` with a new
+  error, `FocusLocked`, that names the routes that need no policy change
+  (`ghost_window op=launch` onto the hidden desktop, `ghost_browser_launch`
+  over CDP). Until now the escape hatch was one tool call away, and agents
+  took it the moment a background action was refused - which is exactly the
+  moment a human sees Ghost take the mouse. The key is the operator's:
+  `GHOST_FOCUS_LOCK=off` in the MCP server's environment allows the other two
+  policies again, `GHOST_FOCUS_POLICY` still pre-selects one, and an
+  operator-set policy is honoured even while locked (the lock stops changes
+  from inside the process, not the operator's choice). `ghost_focus_policy`
+  and `ghost_session_state` report `locked`; the server logs policy and lock
+  at start. Enforced in `ghost-core::focus`, covered by the enforcement test,
+  so no tool surface can grow around it.
+- **Window state changes no longer activate the window.** Under the background
+  policy `ghost_window op=state` used `SW_RESTORE` / `SW_MAXIMIZE` /
+  `SW_MINIMIZE`, each of which activates (minimize activates the next window
+  in the Z order). Restore and minimize now use the `NOACTIVATE` commands,
+  maximize is asked of the window's own thread (`SC_MAXIMIZE`), and if the
+  foreground moved anyway it is handed straight back. Restoring a minimized
+  window so it becomes actionable no longer costs the human their focus,
+  and the `WindowMinimized` error now points at that instead of at
+  `op=focus`.
+- **`focus_window_under_point` is gated.** The helper that raises whatever
+  window sits under a point (used by the foreground act paths) reached
+  `SetForegroundWindow` without consulting the policy. It now refuses under
+  `background` like `focus_window`, and the enforcement test asserts it.
+- Error messages that told an agent to "call ghost_set_focus_policy with
+  prefer_background or foreground" now describe the hidden-desktop and CDP
+  routes and say that real input is the operator's decision. Tool
+  descriptions for `ghost_focus_policy`, `ghost_set_focus_policy`,
+  `ghost_session_state` and `ghost_window` say the same.
+- The MCP Bundle exposes the lock as a setting, "Keep Ghost off your mouse and
+  keyboard", on by default, so Claude Desktop users choose in the extension's
+  settings rather than by editing JSON. `scripts/focus-lock-probe.mjs` checks
+  a built server end to end: locked by default, refusals worded as above,
+  unlocked with `GHOST_FOCUS_LOCK=off`, an operator-set `GHOST_FOCUS_POLICY`
+  honoured while still locked.
+- Behaviour change for operators who relied on agents raising the policy at
+  runtime: add `GHOST_FOCUS_LOCK=off` to the server environment (the bench
+  harness does this itself; it measures the foreground paths on purpose). The
+  CLI is unaffected in the default (it never raised the policy by itself).
+
 ## [0.21.10] - the background promise, enforced
 
 Two ways Ghost was still taking the human's keyboard, both measured on an

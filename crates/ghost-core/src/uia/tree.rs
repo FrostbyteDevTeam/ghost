@@ -8,9 +8,10 @@ use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::WindowsAndMessaging::WindowFromPoint;
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, EnumWindows, GetAncestor, GetForegroundWindow, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW, SetForegroundWindow,
-    GetWindow, ShowWindow, GA_ROOT, GW_OWNER, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
-    SW_SHOWNA, WM_CLOSE,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW, SendMessageTimeoutW,
+    SetForegroundWindow, GetWindow, ShowWindow, GA_ROOT, GW_OWNER, SC_MAXIMIZE,
+    SHOW_WINDOW_CMD, SMTO_ABORTIFHUNG, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
+    SW_SHOWMINNOACTIVE, SW_SHOWNA, SW_SHOWNOACTIVATE, WM_CLOSE, WM_SYSCOMMAND,
 };
 
 /// Roles that are acceptable *substitutes* when no exact match exists.
@@ -964,6 +965,10 @@ pub fn ensure_foreground(hwnd_raw: isize, timeout_ms: u64) -> Result<bool, CoreE
 /// # Safety
 /// Calls Win32 functions that require no special thread affinity.
 pub fn focus_window_under_point(x: i32, y: i32) -> Result<bool, CoreError> {
+    // Raising whatever window sits under a point takes the user's foreground
+    // exactly like `focus_window` does; the gate sits here so no caller can
+    // reach `ensure_foreground` under the background policy by this route.
+    focus::require_foreground_allowed("focus_window_under_point")?;
     unsafe {
         let pt = POINT { x, y };
         let child = WindowFromPoint(pt);
@@ -1045,23 +1050,77 @@ pub fn set_window_state_hwnd(hwnd_raw: isize, state: WindowState) -> Result<(), 
         return Err(CoreError::ProcessNotFound { name: "window handle 0".to_string() });
     }
     let hwnd = HWND(hwnd_raw as *mut _);
+    apply_window_state(hwnd, state, false);
+    Ok(())
+}
+
+/// The `ShowWindow` command for a state change, or `None` when the change is
+/// not made through `ShowWindow`: close is a posted `WM_CLOSE`, and maximize
+/// without activation has no `ShowWindow` form (it goes through `SC_MAXIMIZE`).
+///
+/// `activate` is whether taking the foreground is allowed. `SW_RESTORE`,
+/// `SW_MAXIMIZE` and `SW_MINIMIZE` all activate a window (minimize activates
+/// the next one in the Z order), which under the background policy is the one
+/// thing a state change must not do; the `NOACTIVATE` variants change the
+/// state and leave the user's focus where it is.
+fn show_command(state: WindowState, activate: bool) -> Option<SHOW_WINDOW_CMD> {
+    match (state, activate) {
+        (WindowState::Close, _) => None,
+        (WindowState::Maximize, true) => Some(SW_MAXIMIZE),
+        (WindowState::Maximize, false) => None,
+        (WindowState::Minimize, true) => Some(SW_MINIMIZE),
+        (WindowState::Minimize, false) => Some(SW_SHOWMINNOACTIVE),
+        (WindowState::Restore, true) => Some(SW_RESTORE),
+        (WindowState::Restore, false) => Some(SW_SHOWNOACTIVATE),
+    }
+}
+
+/// Apply `state` to a window. `vanished` marks a window that is neither
+/// visible nor minimised (see [`restore_if_hidden`]); restoring one shows it
+/// as it was, without activation, whatever the policy.
+///
+/// Under the background policy the change is made with the no-activate
+/// commands, maximize is asked of the window's own thread (`SC_MAXIMIZE`),
+/// and if the foreground moved anyway it is handed straight back.
+fn apply_window_state(hwnd: HWND, state: WindowState, vanished: bool) {
+    let activate = focus::foreground_allowed();
     unsafe {
+        let fg_before = GetForegroundWindow();
         match state {
-            WindowState::Maximize => {
-                let _ = ShowWindow(hwnd, SW_MAXIMIZE);
-            }
-            WindowState::Minimize => {
-                let _ = ShowWindow(hwnd, SW_MINIMIZE);
-            }
-            WindowState::Restore => {
-                let _ = ShowWindow(hwnd, SW_RESTORE);
-            }
             WindowState::Close => {
                 let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
             }
+            WindowState::Restore if vanished => {
+                let _ = ShowWindow(hwnd, SW_SHOWNA);
+            }
+            WindowState::Maximize if !activate => {
+                let _ = SendMessageTimeoutW(
+                    hwnd,
+                    WM_SYSCOMMAND,
+                    WPARAM(SC_MAXIMIZE as usize),
+                    LPARAM(0),
+                    SMTO_ABORTIFHUNG,
+                    500,
+                    None,
+                );
+            }
+            _ => {
+                if let Some(cmd) = show_command(state, activate) {
+                    let _ = ShowWindow(hwnd, cmd);
+                }
+            }
+        }
+        if activate || fg_before.is_invalid() || fg_before == hwnd {
+            return;
+        }
+        // An application answering SC_MAXIMIZE with foreground rights of its
+        // own, or Windows re-activating on a state change, can still move the
+        // foreground. Give it a beat to settle and undo it if it did.
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        if GetForegroundWindow() != fg_before {
+            let _ = ensure_foreground(fg_before.0 as isize, 250);
         }
     }
-    Ok(())
 }
 
 pub fn set_window_state(name: &str, state: WindowState) -> Result<(), CoreError> {
@@ -1089,27 +1148,7 @@ pub fn set_window_state(name: &str, state: WindowState) -> Result<(), CoreError>
         }
     };
     let hwnd = HWND(win.hwnd as *mut _);
-    unsafe {
-        match state {
-            WindowState::Maximize => {
-                let _ = ShowWindow(hwnd, SW_MAXIMIZE);
-            }
-            WindowState::Minimize => {
-                let _ = ShowWindow(hwnd, SW_MINIMIZE);
-            }
-            WindowState::Restore if win.state == "hidden" => {
-                // Show without activating: restoring a lost window must not
-                // take the user's foreground.
-                let _ = ShowWindow(hwnd, SW_SHOWNA);
-            }
-            WindowState::Restore => {
-                let _ = ShowWindow(hwnd, SW_RESTORE);
-            }
-            WindowState::Close => {
-                let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
-            }
-        }
-    }
+    apply_window_state(hwnd, state, win.state == "hidden");
     Ok(())
 }
 
@@ -1144,9 +1183,12 @@ mod tests {
         // it is refused before the name lookup. Allow foreground for this unit, then
         // a missing window still surfaces ProcessNotFound.
         let _serial = crate::focus::policy_test_lock();
-        crate::focus::set_policy(crate::focus::FocusPolicy::Foreground);
+        let prev_lock = crate::focus::locked();
+        crate::focus::set_lock(false);
+        crate::focus::set_policy(crate::focus::FocusPolicy::Foreground).unwrap();
         let result = focus_window("__ghost_nonexistent_window_xyzzy__");
-        crate::focus::set_policy(crate::focus::FocusPolicy::Background);
+        crate::focus::set_policy(crate::focus::FocusPolicy::Background).unwrap();
+        crate::focus::set_lock(prev_lock);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -1168,29 +1210,49 @@ mod tests {
         assert!(!role_alias_matches("list", "menu"));
     }
 
-    /// HIGH-1: focus_window_under_point with an off-screen coord returns Ok (not an error).
-    /// The helper is tolerant - it returns Ok(false) for invalid/off-screen points.
+    /// Raising the window under a point is a foreground action like any other:
+    /// refused under the background policy before Win32 is asked anything.
     #[test]
-    fn focus_window_under_point_off_screen_coord_returns_ok() {
-        // A point far off-screen (negative, or beyond any reasonable monitor) should not
-        // panic or return Err - it should return Ok(false) (no window found there).
-        // This exercises the invalid-HWND code path without a live window.
-        let result = focus_window_under_point(-99999, -99999);
-        assert!(
-            result.is_ok(),
-            "focus_window_under_point must not error on off-screen coord"
-        );
-        // May be Ok(true) if somehow a window exists there, but most likely Ok(false).
+    fn focus_window_under_point_is_gated_by_the_policy() {
+        let _serial = crate::focus::policy_test_lock();
+        crate::focus::set_policy(crate::focus::FocusPolicy::Background).unwrap();
+        assert!(matches!(
+            focus_window_under_point(-99999, -99999),
+            Err(CoreError::NoBackgroundPath { action: "focus_window_under_point" })
+        ));
     }
 
-    /// HIGH-1: focus_window_under_point with an absurdly negative coord returns Ok.
+    /// HIGH-1: with foreground allowed, off-screen and absurd coordinates return
+    /// Ok(false) rather than an error or a panic (the invalid-HWND path).
     #[test]
-    fn focus_window_under_point_large_negative_returns_ok() {
-        let result = focus_window_under_point(i32::MIN, i32::MIN);
-        assert!(
-            result.is_ok(),
-            "focus_window_under_point must not error on i32::MIN coords"
-        );
+    fn focus_window_under_point_off_screen_coord_returns_ok_when_allowed() {
+        let _serial = crate::focus::policy_test_lock();
+        let prev_lock = crate::focus::locked();
+        crate::focus::set_lock(false);
+        crate::focus::set_policy(crate::focus::FocusPolicy::Foreground).unwrap();
+        let far = focus_window_under_point(-99999, -99999);
+        let min = focus_window_under_point(i32::MIN, i32::MIN);
+        crate::focus::set_policy(crate::focus::FocusPolicy::Background).unwrap();
+        crate::focus::set_lock(prev_lock);
+        assert!(far.is_ok(), "must not error on off-screen coord");
+        assert!(min.is_ok(), "must not error on i32::MIN coords");
+    }
+
+    /// Under the background policy a window-state change must not activate the
+    /// window: minimize and restore use the no-activate ShowWindow commands, and
+    /// maximize (which has no such command) goes through SC_MAXIMIZE instead.
+    #[test]
+    fn background_window_state_commands_never_activate() {
+        use windows::Win32::UI::WindowsAndMessaging::{SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE};
+        assert_eq!(show_command(WindowState::Minimize, false), Some(SW_SHOWMINNOACTIVE));
+        assert_eq!(show_command(WindowState::Restore, false), Some(SW_SHOWNOACTIVATE));
+        assert_eq!(show_command(WindowState::Maximize, false), None);
+        assert_eq!(show_command(WindowState::Close, false), None);
+        // With foreground allowed the classic activating commands are intended.
+        assert_eq!(show_command(WindowState::Minimize, true), Some(SW_MINIMIZE));
+        assert_eq!(show_command(WindowState::Restore, true), Some(SW_RESTORE));
+        assert_eq!(show_command(WindowState::Maximize, true), Some(SW_MAXIMIZE));
+        assert_eq!(show_command(WindowState::Close, true), None);
     }
 
     // LOW-9: ensure_foreground must not panic on the current foreground window.

@@ -374,6 +374,14 @@ async fn async_main() {
             std::process::exit(1);
         }
     };
+    // One line in the host's log that says whether this process can ever take
+    // the user's input: the policy it starts with and whether it is locked there.
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        policy = session.focus_policy(),
+        locked = session.focus_locked(),
+        "focus policy (GHOST_FOCUS_POLICY selects, GHOST_FOCUS_LOCK=off lets tools raise it)"
+    );
 
     // Single writer: responses arrive from any request task, bytes never mix.
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
@@ -2726,9 +2734,9 @@ async fn handle_ghost_window(
                     "ok": true, "anchored": true, "raised": false, "target": target.to_json(),
                     "note": "background policy: the window was anchored, not raised. ghost_see, \
                              ghost_find, ghost_act, ghost_key, ghost_click_at, ghost_wait and \
-                             ghost_assert now default to it and drive it without focus. Only \
-                             ghost_set_focus_policy prefer_background (then op=focus again) \
-                             brings it in front."
+                             ghost_assert now default to it and drive it without focus. Bringing \
+                             it in front would take the user's keyboard; that needs the operator \
+                             to unlock the policy (GHOST_FOCUS_LOCK=off), not another call."
                 }));
             }
             let mut v = handle_tool(session, "ghost_focus_window", p).await?;
@@ -3303,7 +3311,7 @@ fn lean_tools_schema() -> Value {
           }}},
         // --- Window management ---
         { "name": "ghost_window",
-          "description": "Window management across the user's desktop AND Ghost's hidden desktops. op=list: every window (name, pid, hwnd, focused, state, surface=user|hidden) plus the current anchor. op=focus: under the default background policy this ANCHORS the window and does NOT raise it (the anchored verbs drive it without focus); under prefer_background/foreground it raises it. op=anchor: name= sets the anchor, clear=true clears it, no args reports it. op=state: maximize|minimize|restore|close (name+state). op=launch: start exe - under the background policy the app starts on a hidden desktop, never on your screen, and is anchored (see target.surface in the response).",
+          "description": "Window management across the user's desktop AND Ghost's hidden desktops. op=list: every window (name, pid, hwnd, focused, state, surface=user|hidden) plus the current anchor. op=focus: under the default background policy this ANCHORS the window and does NOT raise it (the anchored verbs drive it without focus); only an operator-unlocked prefer_background/foreground policy raises it. op=anchor: name= sets the anchor, clear=true clears it, no args reports it. op=state: maximize|minimize|restore|close (name+state); under the background policy these never activate the window, so the user's focus stays put (restore is how a minimized window becomes actionable). op=launch: start exe - under the background policy the app starts on a hidden desktop, never on your screen, and is anchored (see target.surface in the response).",
           "inputSchema": { "type": "object", "properties": {
               "op": { "type": "string", "enum": ["list","focus","anchor","state","launch"], "description": "Operation (default list)" },
               "name": { "type": "string", "description": "Window title substring (op=focus|anchor|state). Also accepted as alias for 'exe' on op=launch." },

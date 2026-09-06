@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.23.1] - the last two holes
+
+Two things the 0.23.0 measurement pass turned up and did not fix.
+
+- **`clear_focused_field` could type into the human's window.** The
+  select-all-then-Delete that makes a keyboard `type` replace a field instead
+  of appending to it went through `SendInput` with no policy gate. Its one
+  caller is reached only behind a `mouse::block`-gated click, so nothing
+  changed in practice - but the enforcement test's claim is that NO primitive
+  in `ghost-core` can touch the user's keyboard, and this one could. The
+  keys in question are Ctrl+A and Delete, which in someone's document erase
+  it. Gated, and the enforcement test now asserts it.
+- **A background navigate reports arrival by URL, not only by title.**
+  `ghost_wait for=navigate` waited for the window title to change, which
+  cannot see a navigation that does not change it - a reload, or going to the
+  page you are already on. It then spent the whole timeout and reported
+  `title_changed: false` for a navigation that had in fact worked (measured:
+  15.6 s). It now also watches the address bar's own value and returns as
+  soon as either confirms, reporting `arrived`, `title_changed` and
+  `url_confirmed` separately. Measured with `scripts/navigate-probe.mjs`:
+  8 of 8 navigations confirmed in 0.5-1.0 s, where the title signal alone
+  fired on none of them.
+- The "did not arrive" note now also warns that reading a browser with
+  `ghost_see mode=text` needs a generous limit: the toolbar and a long URL
+  come first in the tree and a small limit returns only those. That, not a
+  missing accessibility tree, is why a page can look empty after navigating.
+
+The desktop probe was also made trustworthy rather than merely green: it
+grades on where each keystroke was DELIVERED (the observer records the
+foreground window with every key), raises a window before the stand-in
+clicks it so a covered title bar cannot silently redirect the click, and
+treats a read-back it could not perform as skipped instead of failed.
+
+Verified: workspace tests green (39 suites), clippy `-D warnings
+--all-targets` clean on Windows and the Linux cross target, and the LIVE
+desktop suite - 26 tests driving real applications on a hidden desktop -
+**26 passed, 0 failed**, its first green run since 0.21.7. It covers
+`navigate_and_wait_resolves_on_edge`, `posted_typing_lands_in_a_blurred_chromium_window`
+and `calculator_button_clicks_in_the_background`.
+
+Where the background promise stands, measured: across clean runs of the
+desktop probe, of roughly 490 keystrokes each, **zero to one** reached the
+window the agent was driving (0, 0, 1). That residual is honest and
+irreducible by this mechanism: a hand-back takes 20 to 100 ms and someone
+typing at 25 characters a second can land one key inside it. Zero is only
+available by never causing the activation - launch the app through Ghost
+(hidden desktop) or the browser through `ghost_browser_launch` (CDP).
+
 ## [0.23.0] - measured on a real desktop, while a human types
 
 0.22 locked the background policy so no agent could turn it off. This release

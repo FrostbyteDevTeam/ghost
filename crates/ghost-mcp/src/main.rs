@@ -2091,11 +2091,45 @@ async fn handle_tool(
             };
             let enter = json!({ "window": target.title, "keys": "Enter" });
             dispatch_tool(session, "ghost_key", &enter).await?;
-            let (changed, title_after) = session
-                .wait_for_title_change(&target, timeout_ms)
-                .await
-                .map_err(|e| e.to_string())?;
-            if changed && settle_ms > 0 {
+            // Two independent confirmations, whichever lands first.
+            //
+            // A title change is the fast one, but it cannot see a navigation
+            // that does not change the title - reloading, or going to the page
+            // you are already on - and waiting for one then costs the whole
+            // timeout and reports failure for a navigation that worked
+            // (measured 2026-09-06: 15.6 s and `title_changed: false` on a page
+            // that had in fact arrived). The address bar's own value settles to
+            // where the browser actually went, so it answers that case.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+            let mut changed = false;
+            let mut title_after = target.title.clone();
+            let mut url_confirmed = false;
+            loop {
+                match session.wait_for_title_change(&target, 0).await {
+                    Ok((true, t)) => {
+                        changed = true;
+                        title_after = t;
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(e) => return Err(e.to_string()),
+                }
+                if let Ok(shown) = session
+                    .window_value(target.hwnd, ghost_session::By::Name(bar.to_string()), Some("edit"))
+                    .await
+                {
+                    if address_bar_shows(&shown, url) {
+                        url_confirmed = true;
+                        break;
+                    }
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            let arrived = changed || url_confirmed;
+            if arrived && settle_ms > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(settle_ms)).await;
             }
             Ok(json!({
@@ -2106,12 +2140,16 @@ async fn handle_tool(
                 "title_before": target.title,
                 "title_after": title_after,
                 "title_changed": changed,
+                "url_confirmed": url_confirmed,
+                "arrived": arrived,
                 "ms": started.elapsed().as_millis() as u64,
                 "target": target.to_json(),
                 "note": if changed {
-                    "returned when the window title changed; the page may still be loading subresources - ghost_wait for=element for a specific control"
+                    "the window title changed; the page may still be loading subresources - ghost_wait for=element for a specific control"
+                } else if url_confirmed {
+                    "the title did not change but the address bar shows this url, so the navigation happened (a reload, or the page it was already on)"
                 } else {
-                    "the title did not change within timeout_ms: same document, a slow load, or a page that keeps its title - ghost_see to confirm"
+                    "neither the title nor the address bar confirmed this url within timeout_ms - ghost_see to check. Reading a browser with ghost_see mode=text needs a generous limit: the toolbar and the address bar come first and a small limit returns only those"
                 },
             }))
         }
@@ -2879,6 +2917,33 @@ async fn handle_ghost_assert(
         }
         other => Err(format!("ghost_assert: unknown predicate '{other}'; use text-present|text-absent|element-exists|value-equals|value-contains")),
     }
+}
+
+/// Does the address bar show the page we asked for?
+///
+/// Browsers display a URL, they do not echo it: Chromium drops `https://` and a
+/// trailing slash, shows a `file://` URL as a plain path with forward slashes,
+/// and may hide `www.`. So this compares what is left after taking all of that
+/// off both sides, and accepts either one containing the other - the bar can be
+/// shorter (scheme hidden) or longer (a fragment the page added).
+fn address_bar_shows(shown: &str, requested: &str) -> bool {
+    fn strip(s: &str) -> String {
+        let s = s.trim().to_lowercase().replace('\\', "/");
+        let s = s
+            .strip_prefix("https://")
+            .or_else(|| s.strip_prefix("http://"))
+            .or_else(|| s.strip_prefix("file:///"))
+            .or_else(|| s.strip_prefix("file://"))
+            .unwrap_or(&s)
+            .to_string();
+        let s = s.strip_prefix("www.").unwrap_or(&s).to_string();
+        s.trim_end_matches('/').to_string()
+    }
+    let (a, b) = (strip(shown), strip(requested));
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    a == b || a.contains(&b) || b.contains(&a)
 }
 
 /// Parse a `script` string (YAML or JSON) into a JSON `Value`.
@@ -4339,6 +4404,30 @@ mod tests {
         assert_eq!(resp["serverInfo"]["version"], env!("CARGO_PKG_VERSION"));
         // Negative control: the stale hardcoded version must not come back.
         assert_ne!(resp["serverInfo"]["version"], "0.16.0");
+    }
+
+    #[test]
+    fn address_bar_matches_what_a_browser_actually_displays() {
+        // Chromium hides the scheme and a trailing slash.
+        assert!(address_bar_shows("example.com", "https://example.com/"));
+        assert!(address_bar_shows("example.com/help", "https://example.com/help"));
+        assert!(address_bar_shows("https://example.com/", "https://example.com/"));
+        // www, and http as well as https.
+        assert!(address_bar_shows("example.com", "http://www.example.com"));
+        // A file URL is shown as a plain path, backslashes normalised.
+        assert!(address_bar_shows(
+            "C:/Users/k/page.html",
+            "file:///C:/Users/k/page.html"
+        ));
+        assert!(address_bar_shows(
+            r"C:\Users\k\page.html",
+            "file:///C:/Users/k/page.html"
+        ));
+        // A different page must NOT count as arrival - the whole point.
+        assert!(!address_bar_shows("example.com", "https://example.org/"));
+        assert!(!address_bar_shows("C:/Users/k/other.html", "file:///C:/Users/k/page.html"));
+        assert!(!address_bar_shows("", "https://example.com/"));
+        assert!(!address_bar_shows("example.com", ""));
     }
 
     // T0.5 - screenshot defaults

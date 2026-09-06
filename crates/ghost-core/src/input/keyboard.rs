@@ -65,15 +65,23 @@ pub fn type_text(text: &str) -> Result<(), CoreError> {
     Ok(())
 }
 
-/// Select-all (Ctrl+A) then Delete, to clear the focused field before typing —
+/// Select-all (Ctrl+A) then Delete, to clear the focused field before typing - 
 /// so `type` replaces existing content instead of appending to it (matching
 /// UIA ValuePattern.SetValue and Playwright's fill() semantics).
 pub fn clear_focused_field() -> Result<(), CoreError> {
     if is_stopped() {
         return Err(CoreError::Win32 { code: 0, context: "stopped" });
     }
+    // Ctrl+A and Delete go to whatever window holds the real keyboard focus,
+    // which under the background policy is the HUMAN'S - and those two keys in
+    // their document erase it. The one caller reaches this only behind a
+    // `mouse::click` that is itself gated, so nothing changes in practice; the
+    // gate belongs here because "no primitive in this crate can touch the
+    // user's keyboard" has to be true of every primitive, not of today's call
+    // graph. Found 2026-09-06 by asking the enforcement test to prove it.
+    focus::require_foreground_allowed("clear_focused_field")?;
     unsafe {
-        // Ctrl down, A down/up, Ctrl up — select all.
+        // Ctrl down, A down/up, Ctrl up - select all.
         let select_all = [
             key_event(VK_CONTROL, false),
             key_event(VK_A, false),

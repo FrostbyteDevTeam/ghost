@@ -45,6 +45,9 @@ fn background_policy_blocks_every_screen_stealing_primitive() {
     is_blocked(keyboard::press_key(vk), "keyboard::press_key");
     is_blocked(keyboard::key_down(vk), "keyboard::key_down");
     is_blocked(keyboard::key_up(vk), "keyboard::key_up");
+    // Ctrl+A then Delete: the most destructive two keys to send into whatever
+    // the human happens to have focused.
+    is_blocked(keyboard::clear_focused_field(), "keyboard::clear_focused_field");
 
     // Window activation: raises a window over the user's work.
     is_blocked(tree::focus_window("Notepad"), "tree::focus_window");

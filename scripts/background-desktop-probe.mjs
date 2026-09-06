@@ -208,7 +208,7 @@ if (simulate) {
   else {
     console.log(`${stamp()} stand-in user's Notepad: ${notepad.hwnd} "${notepad.name}"`);
     savedClip = (await call('ghost_clipboard', { op: 'get' })).data;
-    await psFile(simPs, ['-SendToBack', String(edge.hwnd), '-ClickHwnd', String(notepad.hwnd)]);
+    await psFile(simPs, ['-SendToBack', String(edge.hwnd), '-Raise', String(notepad.hwnd), '-ClickHwnd', String(notepad.hwnd)]);
     check((await fgNow()).hwnd === notepad.hwnd, 'B stand-in user activated Notepad by clicking it');
 
     mark('phaseB_start');
@@ -226,7 +226,7 @@ if (simulate) {
     mark('user_in_browser_start', true);
     await psFile(simPs, ['-ClickHwnd', String(edge.hwnd)]);
     mark('user_in_browser_end', true);
-    await psFile(simPs, ['-SendToBack', String(edge.hwnd), '-ClickHwnd', String(notepad.hwnd)]);
+    await psFile(simPs, ['-SendToBack', String(edge.hwnd), '-Raise', String(notepad.hwnd), '-ClickHwnd', String(notepad.hwnd)]);
     check((await fgNow()).hwnd === notepad.hwnd, 'C1 stand-in user is back in Notepad (click)');
     const t1 = psFile(simPs, ['-Text', S2, '-DelayMs', '40']);
     await sleep(200);
@@ -240,18 +240,14 @@ if (simulate) {
     mark('phaseC2_start');
     mark('user_in_browser_start', true);
     await psFile(simPs, ['-ClickHwnd', String(edge.hwnd)]);
-    mark('user_in_browser_end', true);
+    // Alt+Tab first, because the browser keeps activation rights when the human
+    // leaves it that way - the hardest case for the sentinel. A SYNTHESIZED
+    // Alt+Tab routinely leaves the switcher itself in front, which measures the
+    // simulation and not Ghost, so the click is the one that must land.
     await psFile(simPs, ['-AltTab']);
-    let afterAlt = await fgNow();
-    if (afterAlt.hwnd !== notepad.hwnd) {
-      // A synthesized Alt+Tab often leaves the switcher itself in front; that
-      // is the simulation's limit, not Ghost's. Get back to Notepad the other
-      // way so the phase still tests what it is for: Ghost typing into a window
-      // the human has just left.
-      notes.push(`C2: synthetic Alt+Tab landed on ${afterAlt.hwnd} instead of Notepad; clicked back instead`);
-      await psFile(simPs, ['-ClickHwnd', String(notepad.hwnd)]);
-      afterAlt = await fgNow();
-    }
+    await psFile(simPs, ['-SendToBack', String(edge.hwnd), '-Raise', String(notepad.hwnd), '-ClickHwnd', String(notepad.hwnd)]);
+    mark('user_in_browser_end', true);
+    const afterAlt = await fgNow();
     check(afterAlt.hwnd === notepad.hwnd, 'C2 the user is back in Notepad after leaving the browser', afterAlt.hwnd === notepad.hwnd ? '' : `fg=${afterAlt.hwnd}`);
     const t2 = psFile(simPs, ['-Text', S3, '-DelayMs', '40']);
     await sleep(200);
@@ -261,7 +257,11 @@ if (simulate) {
     mark('phaseC2_end');
 
     // What actually landed in the user's document.
-    await psFile(simPs, ['-ClickHwnd', String(notepad.hwnd)]);
+    // Read back what the user's document actually holds. Raise it first: a
+    // click on a covered title bar lands on whatever is covering it, and then
+    // Ctrl+A/Ctrl+C copies THAT window instead.
+    await psFile(simPs, ['-SendToBack', String(edge.hwnd), '-Raise', String(notepad.hwnd), '-ClickHwnd', String(notepad.hwnd)]);
+    const onNotepad = (await fgNow()).hwnd === notepad.hwnd;
     await psFile(simPs, ['-CopyAll']);
     const clip = (await call('ghost_clipboard', { op: 'get' })).data;
     notepadText = typeof clip?.text === 'string' ? clip.text : (typeof clip === 'string' ? clip : JSON.stringify(clip));

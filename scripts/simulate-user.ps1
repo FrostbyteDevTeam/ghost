@@ -4,11 +4,14 @@
 # the probe needs (Ghost must work around a human who is actively typing).
 #
 # Steps run in this order, each only if given:
+#   -SendToBack <h>     put window h behind the others (no activation)
+#   -Raise <h>          put window h on top without activating it, so the click below lands
 #   -ClickHwnd <h>      click the title bar of window h (activates it as a user would)
 #   -AltTab             press Alt+Tab (switches to the previous window)
 #   -Text <s>           type s, one character every -DelayMs
 #   -CopyAll            Ctrl+A, Ctrl+C (so the caller can read what landed)
 param(
+  [long]$Raise = 0,
   [long]$SendToBack = 0,
   [long]$ClickHwnd = 0,
   [switch]$AltTab,
@@ -30,6 +33,10 @@ public static class Sim {
   [DllImport("user32.dll")] static extern int GetSystemMetrics(int i);
   [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
   public static void Lower(long hwnd) { SetWindowPos((IntPtr)hwnd, (IntPtr)1, 0, 0, 0, 0, 0x0010 | 0x0002 | 0x0001); }
+  // Put a window on top WITHOUT activating it, so a later click on its title
+  // bar reaches it instead of whatever was covering it. The click is what makes
+  // it the user's window; this only makes the click possible.
+  public static void Raise(long hwnd) { SetWindowPos((IntPtr)hwnd, (IntPtr)0, 0, 0, 0, 0, 0x0010 | 0x0002 | 0x0001); }
   static void Send(params INPUT[] inputs) { SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT))); }
   static INPUT Key(ushort vk, bool up) { var i = new INPUT(); i.type = 1; i.u.ki.wVk = vk; i.u.ki.dwFlags = up ? 2u : 0u; return i; }
   static INPUT Uni(char c, bool up) { var i = new INPUT(); i.type = 1; i.u.ki.wScan = c; i.u.ki.dwFlags = 4u | (up ? 2u : 0u); return i; }
@@ -57,6 +64,7 @@ public static class Sim {
 }
 '@
 if ($SendToBack -ne 0) { [Sim]::Lower($SendToBack); Start-Sleep -Milliseconds 150 }
+if ($Raise -ne 0) { [Sim]::Raise($Raise); Start-Sleep -Milliseconds 150 }
 if ($ClickHwnd -ne 0) { [Sim]::ClickTitleBar($ClickHwnd) }
 if ($AltTab) { [Sim]::Chord(0x12, 0x09); Start-Sleep -Milliseconds 400 }
 if ($Text -ne '') { [Sim]::TypeText($Text, $DelayMs) }

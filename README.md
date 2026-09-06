@@ -37,7 +37,8 @@ once and behave the same on both. [Platform support](#platforms) ·
   And since 0.23 a window that grabs the foreground on its own - browsers do, on
   their own accessibility calls - is handed straight back, so your typing keeps
   going where you are looking. Measured on a real desktop with a person typing
-  throughout: 484 keystrokes, none delivered to the wrong window.
+  throughout: of roughly 490 keystrokes a run, zero to one reached the window
+  the agent was driving.
   ([how](#background-mode-agent-harness--computer-use))
 - **Never your window by accident.** The session remembers the last window the
   agent named or launched and every window-scoped verb targets it by default. The
@@ -523,8 +524,13 @@ into another window for the whole run (`scripts/background-desktop-probe.mjs`,
 
 | | before 0.23 | 0.23 |
 | --- | --- | --- |
-| keystrokes delivered to the wrong window | 48 | **0 of 484** |
+| keystrokes delivered to the wrong window | 48 | **0 to 1 of ~490** |
 | worst time a driven window held the foreground | 28 s | 20-100 ms |
+
+The residual is not rounding: a hand-back takes 20 to 100 ms, and someone typing
+at 25 characters a second can land one key inside that gap. Across clean runs it
+was zero, zero and one. It cannot be driven to a guaranteed zero by undoing the
+activation, only by never causing one.
 
 For zero activation rather than a brief one, let Ghost start the app: anything
 it launches lives on a hidden desktop with its own input queue and cannot take

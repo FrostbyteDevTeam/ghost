@@ -70,6 +70,10 @@ pub struct WindowTarget {
     pub minimized: bool,
     pub surface: Surface,
     pub source: TargetSource,
+    /// Set when the caller named a title this window USED to carry. Pages
+    /// rewrite `document.title` on every navigation; the anchor followed the
+    /// handle, and the response says so instead of failing a 2 s search.
+    pub drifted_from: Option<String>,
 }
 
 impl WindowTarget {
@@ -100,6 +104,9 @@ impl WindowTarget {
         if self.minimized {
             v["minimized"] = Value::Bool(true);
         }
+        if let Some(asked) = &self.drifted_from {
+            v["title_drift"] = json!({ "asked": asked, "now": self.title });
+        }
         v
     }
 }
@@ -123,7 +130,23 @@ impl Candidate {
             minimized: self.minimized,
             surface: self.surface.clone(),
             source,
+            drifted_from: None,
         }
+    }
+}
+
+/// How well a title answers a query: 0 exact, 1 prefix, 2 substring, all
+/// case-insensitive. `query_lc` is already trimmed and lowercased.
+fn title_rank(title: &str, query_lc: &str) -> Option<u8> {
+    let t = title.to_lowercase();
+    if t == query_lc {
+        Some(0)
+    } else if t.starts_with(query_lc) {
+        Some(1)
+    } else if t.contains(query_lc) {
+        Some(2)
+    } else {
+        None
     }
 }
 
@@ -140,14 +163,7 @@ pub fn pick<'a>(candidates: &'a [Candidate], query: &str) -> Option<&'a Candidat
     }
     let mut best: Option<(u8, &Candidate)> = None;
     for c in candidates {
-        let t = c.title.to_lowercase();
-        let rank = if t == q {
-            0
-        } else if t.starts_with(&q) {
-            1
-        } else if t.contains(&q) {
-            2
-        } else {
+        let Some(rank) = title_rank(&c.title, &q) else {
             continue;
         };
         let rank = rank * 2 + u8::from(c.minimized);
@@ -158,6 +174,40 @@ pub fn pick<'a>(candidates: &'a [Candidate], query: &str) -> Option<&'a Candidat
     }
     best.map(|(_, c)| c)
 }
+
+/// Does `query` name a title the anchored window carried earlier this session?
+/// Same matching rule as `pick`, so a query that would have found the window
+/// then still finds it now.
+pub fn query_names_history(history: &[String], query: &str) -> bool {
+    let q = query.trim().to_lowercase();
+    !q.is_empty() && history.iter().any(|t| title_rank(t, &q).is_some())
+}
+
+/// The whole targeting decision, pure. A live title match wins and the caller
+/// re-anchors on it. Failing that, a query that names a title the anchored
+/// window used to have resolves to that window with `drifted = true`: pages
+/// rewrite `document.title` on navigation, and an agent that re-targets by the
+/// title it last read must land on the same handle instead of paying the
+/// launch-race retry. Otherwise `None`, and the caller may keep polling for a
+/// window that is still appearing.
+pub fn resolve_static<'a>(
+    candidates: &'a [Candidate],
+    query: &str,
+    anchor: Option<(isize, &Surface)>,
+    history: &[String],
+) -> Option<(&'a Candidate, bool)> {
+    if let Some(c) = pick(candidates, query) {
+        return Some((c, false));
+    }
+    let (hwnd, surface) = anchor?;
+    let live = candidates
+        .iter()
+        .find(|c| c.hwnd == hwnd && &c.surface == surface)?;
+    query_names_history(history, query).then_some((live, true))
+}
+
+/// How many past titles of the anchored window are kept for drift matching.
+const TITLE_HISTORY: usize = 16;
 
 /// A short, agent-readable listing for "no such window" errors.
 pub fn describe_candidates(candidates: &[Candidate]) -> String {
@@ -236,19 +286,57 @@ impl GhostSession {
         self.anchor.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
-    /// Remember `t` as the implicit target of later unanchored verbs.
+    /// Titles the anchored window has carried this session, oldest first.
+    pub fn anchor_titles(&self) -> Vec<String> {
+        self.anchor_titles
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// Record a title the anchored window is showing now, so a later query by
+    /// that title still finds the window after it retitles itself.
+    fn remember_title(&self, title: &str) {
+        let mut titles = self.anchor_titles.lock().unwrap_or_else(|p| p.into_inner());
+        if title.trim().is_empty() || titles.iter().any(|t| t == title) {
+            return;
+        }
+        if titles.len() >= TITLE_HISTORY {
+            titles.remove(0);
+        }
+        titles.push(title.to_string());
+    }
+
+    /// Remember `t` as the implicit target of later unanchored verbs. Anchoring
+    /// a different window starts its title history afresh.
     pub fn set_anchor(&self, t: &WindowTarget) {
+        let same = self
+            .anchor()
+            .is_some_and(|a| a.hwnd == t.hwnd && a.surface == t.surface);
+        if !same {
+            self.anchor_titles
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+        }
+        self.remember_title(&t.title);
         let mut stored = t.clone();
         stored.source = TargetSource::Anchor;
+        stored.drifted_from = None;
         *self.anchor.lock().unwrap_or_else(|p| p.into_inner()) = Some(stored);
     }
 
     pub fn clear_anchor(&self) {
         *self.anchor.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        self.anchor_titles
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
     }
 
-    /// The anchor if its window still exists, with its title refreshed. A dead
-    /// anchor is cleared so it cannot keep steering verbs at a closed window.
+    /// The anchor if its window still exists, with its title refreshed and
+    /// remembered. A dead anchor is cleared so it cannot keep steering verbs at
+    /// a closed window.
     pub async fn live_anchor(&self) -> Option<WindowTarget> {
         let a = self.anchor()?;
         let cands = self.candidates().await.ok()?;
@@ -256,7 +344,10 @@ impl GhostSession {
             .iter()
             .find(|c| c.hwnd == a.hwnd && c.surface == a.surface)
         {
-            Some(c) => Some(c.to_target(TargetSource::Anchor)),
+            Some(c) => {
+                self.remember_title(&c.title);
+                Some(c.to_target(TargetSource::Anchor))
+            }
             None => {
                 self.clear_anchor();
                 None
@@ -277,6 +368,7 @@ impl GhostSession {
                 minimized: false,
                 surface: Surface::User,
                 source: TargetSource::Foreground,
+                drifted_from: None,
             },
         })
     }
@@ -285,8 +377,10 @@ impl GhostSession {
     ///
     /// `Some(title)`: `"foreground"` is the human's foreground window (never
     /// anchored); any other title is matched across the user desktop and every
-    /// hidden desktop, retried briefly to absorb a launch race, and the hit
-    /// becomes the session anchor.
+    /// hidden desktop and the hit becomes the session anchor. A title the
+    /// anchored window carried earlier this session resolves to that window at
+    /// once, flagged `title_drift` (see `resolve_static`). Only a title nobody
+    /// has is retried briefly, to absorb a launch race.
     ///
     /// `None`: the live anchor if there is one, otherwise the foreground window
     /// (source `Foreground`, so the caller can say so).
@@ -297,7 +391,16 @@ impl GhostSession {
                 let deadline = Instant::now() + RESOLVE_DEADLINE;
                 loop {
                     let cands = self.candidates().await?;
-                    if let Some(c) = pick(&cands, w) {
+                    let anchor = self.anchor();
+                    let history = self.anchor_titles();
+                    let anchored = anchor.as_ref().map(|a| (a.hwnd, &a.surface));
+                    if let Some((c, drifted)) = resolve_static(&cands, w, anchored, &history) {
+                        if drifted {
+                            self.remember_title(&c.title);
+                            let mut t = c.to_target(TargetSource::Anchor);
+                            t.drifted_from = Some(w.to_string());
+                            return Ok(t);
+                        }
                         let t = c.to_target(TargetSource::Explicit);
                         self.set_anchor(&t);
                         return Ok(t);
@@ -394,17 +497,85 @@ mod tests {
             minimized: false,
             surface: Surface::Hidden { desktop: "auto".into() },
             source: TargetSource::Anchor,
+            drifted_from: None,
         };
         let v = t.to_json();
         assert_eq!(v["surface"], "hidden");
         assert_eq!(v["desktop"], "auto");
         assert_eq!(v["source"], "anchor");
         assert!(v.get("minimized").is_none());
+        assert!(v.get("title_drift").is_none());
         let u = WindowTarget { surface: Surface::User, minimized: true, ..t };
         let v = u.to_json();
         assert_eq!(v["surface"], "user");
         assert!(v.get("desktop").is_none());
         assert_eq!(v["minimized"], true);
+    }
+
+    #[test]
+    fn target_json_reports_title_drift() {
+        let t = WindowTarget {
+            hwnd: 7,
+            title: "Dockerfile | Ghost | Glama - Comet".into(),
+            pid: 9,
+            minimized: false,
+            surface: Surface::User,
+            source: TargetSource::Anchor,
+            drifted_from: Some("Repository | Ghost | Glama".into()),
+        };
+        let v = t.to_json();
+        assert_eq!(v["source"], "anchor");
+        assert_eq!(v["title_drift"]["asked"], "Repository | Ghost | Glama");
+        assert_eq!(v["title_drift"]["now"], "Dockerfile | Ghost | Glama - Comet");
+    }
+
+    #[test]
+    fn a_stale_title_resolves_to_the_anchored_window_without_a_live_match() {
+        // The agent anchored the window as "Repository | ...", the page
+        // navigated and now says "Dockerfile | ...", and the agent asks for it
+        // again by the title it last read.
+        let cands = vec![
+            c("Dockerfile | Ghost | Glama - Comet", false, 7),
+            c("Terminal", false, 8),
+        ];
+        let history = vec!["Repository | Ghost | Glama - Comet".to_string()];
+        let (hit, drifted) =
+            resolve_static(&cands, "Repository | Ghost | Glama", Some((7, &Surface::User)), &history)
+                .unwrap();
+        assert_eq!(hit.hwnd, 7);
+        assert!(drifted);
+        // A minimised anchor still resolves: reads work on minimised windows.
+        let cands = vec![c("Dockerfile | Ghost | Glama - Comet", true, 7)];
+        let (hit, drifted) =
+            resolve_static(&cands, "repository", Some((7, &Surface::User)), &history).unwrap();
+        assert_eq!(hit.hwnd, 7);
+        assert!(drifted);
+    }
+
+    #[test]
+    fn a_live_title_match_beats_drift_and_an_unknown_title_still_misses() {
+        let cands = vec![
+            c("Dockerfile | Ghost | Glama - Comet", false, 7),
+            c("Repository - Other Browser", false, 9),
+        ];
+        let history = vec!["Repository | Ghost | Glama - Comet".to_string()];
+        let (hit, drifted) =
+            resolve_static(&cands, "Repository", Some((7, &Surface::User)), &history).unwrap();
+        assert_eq!(hit.hwnd, 9, "a window that has the title now wins");
+        assert!(!drifted);
+        assert!(resolve_static(&cands, "Calculator", Some((7, &Surface::User)), &history).is_none());
+        assert!(resolve_static(&cands, "   ", Some((7, &Surface::User)), &history).is_none());
+    }
+
+    #[test]
+    fn drift_needs_the_anchor_alive_on_the_same_surface() {
+        let cands = vec![c("Dockerfile | Ghost | Glama - Comet", false, 7)];
+        let history = vec!["Repository | Ghost | Glama - Comet".to_string()];
+        assert!(resolve_static(&cands, "Repository", None, &history).is_none());
+        assert!(resolve_static(&cands, "Repository", Some((99, &Surface::User)), &history).is_none());
+        let hidden = Surface::Hidden { desktop: "auto".into() };
+        assert!(resolve_static(&cands, "Repository", Some((7, &hidden)), &history).is_none());
+        assert!(!query_names_history(&[], "Repository"));
     }
 
     #[test]

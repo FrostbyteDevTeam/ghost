@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.21.9] - faster where it was actually slow
+
+Measured first: a session of 368 Ghost calls showed the server's own time at
+74 ms median for a read and 200 ms for an act, while 91% of every batched
+run was fixed sleeps the agent wrote after navigating, and twelve
+window-title misses cost 64 s between them. This release removes both.
+
+- **A stale title still finds the window, instantly.** Pages rewrite
+  `document.title` on every navigation, and an agent that re-targets by the
+  title it last read used to pay the 2 s launch-race retry (4 to 11 s when
+  the run retried). The session now remembers every title the anchored
+  window has carried; a query that names one of them resolves to that handle
+  at once, with `target.title_drift = {asked, now}` in the response. A title
+  that genuinely matches another window still wins; a title nobody has still
+  gets the 2 s retry. Measured: 15 ms where it was 2 s.
+- **`ghost_wait for=navigate` works in the background and returns when the
+  page has actually changed.** It sets the address bar over UIA, posts
+  Enter, and returns on the window-title change (Chromium and Firefox
+  retitle when the new document commits), then pauses `settle_ms` (250) for
+  paint. Every route applies: user desktop, hidden desktop, and DevTools for
+  a browser with a port; only a foreground focus policy takes the old
+  focus-and-type path. `window` is optional (the anchor). Measured on Edge
+  on a hidden desktop: 1.4 s, 0.4 s with `settle_ms=0`, where agents were
+  sleeping 6 to 7 s.
+- **Tool descriptions steer to the fast paths.** `ghost_wait` leads with
+  `element`, `value` and `navigate` and calls `for=ms` the last resort;
+  `ghost_run` says to name the window once and omit it afterwards, since
+  the anchor follows the handle through title changes.
+- **Linux builds again.** `focus_policy()` had no non-Windows definition,
+  which the new navigate branch exposed.
+- `scripts/speed-probe.mjs` reproduces the timings above against any
+  `ghost-mcp` binary, on a throwaway Edge profile on a hidden desktop.
+  `scripts/latency-audit.py` breaks a Claude Code transcript down by where
+  the Ghost milliseconds went.
+
 ## [0.21.8] - listed everywhere, described honestly
 
 - **The server no longer nags for a vision key.** Every start printed

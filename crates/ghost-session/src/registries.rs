@@ -53,6 +53,13 @@ impl GhostSession {
         ghost_core::focus::policy().as_str()
     }
 
+    /// Off Windows the policy is not enforced (see `target.rs`), so every
+    /// caller that branches on it takes the background path.
+    #[cfg(not(windows))]
+    pub fn focus_policy(&self) -> &'static str {
+        "background"
+    }
+
     /// Change the focus policy for this process.
     ///
     /// `background` (the default) makes every screen-stealing primitive fail

@@ -132,6 +132,9 @@ pub struct GhostSession {
     /// The window unanchored verbs act on (see `target.rs`): the last window the
     /// agent named or launched. Never the human's foreground by accident.
     pub(crate) anchor: Mutex<Option<crate::target::WindowTarget>>,
+    /// Titles the anchored window has carried this session, so a query by a
+    /// title it no longer shows still resolves to it (see `target.rs`).
+    pub(crate) anchor_titles: Mutex<Vec<String>>,
     /// pid -> DevTools port memo for CDP routing (see `cdp_route.rs`).
     pub(crate) cdp_ports: Mutex<crate::cdp_route::CdpPortCache>,
 }
@@ -196,6 +199,7 @@ impl GhostSession {
             #[cfg(windows)]
             desktops: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             anchor: Mutex::new(None),
+            anchor_titles: Mutex::new(Vec::new()),
             cdp_ports: Mutex::new(crate::cdp_route::CdpPortCache::default()),
         })
     }
@@ -1583,6 +1587,42 @@ impl GhostSession {
         crate::engine::input::keyboard::type_text(url).map_err(GhostError::Core)?;
         self.press("Enter").await?;
         self.wait_for_idle(Some(window_name), 3, idle_timeout_ms).await
+    }
+
+    /// Wait until `target`'s window title differs from the one it had when the
+    /// target was resolved, polling every 50 ms across both surfaces. Chromium
+    /// and Firefox retitle the window when a new document commits, so this is
+    /// the cheapest "the navigation happened" signal that needs no DevTools
+    /// port. Returns `(changed, title_now)`; a window that disappears is an
+    /// error, a title that never changes is `(false, same title)`.
+    pub async fn wait_for_title_change(
+        &self,
+        target: &crate::target::WindowTarget,
+        timeout_ms: u64,
+    ) -> Result<(bool, String)> {
+        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            if is_stopped() { return Err(GhostError::Stopped); }
+            let now = self
+                .candidates()
+                .await?
+                .into_iter()
+                .find(|c| c.hwnd == target.hwnd && c.surface == target.surface)
+                .map(|c| c.title);
+            match now {
+                Some(t) if t != target.title => return Ok((true, t)),
+                Some(_) => {}
+                None => {
+                    return Err(GhostError::ProcessNotFound {
+                        name: format!("window '{}' closed during navigation", target.title),
+                    })
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok((false, target.title.clone()));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// Click an element, then wait for `expected_text` to appear (or disappear) on screen.

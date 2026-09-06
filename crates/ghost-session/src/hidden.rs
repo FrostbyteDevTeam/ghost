@@ -330,6 +330,7 @@ impl GhostSession {
                         minimized: false,
                         surface: Surface::Hidden { desktop: AUTO_DESKTOP.into() },
                         source: TargetSource::Explicit,
+                        drifted_from: None,
                     };
                     self.set_anchor(&target);
                     let mut anchored = target.clone();
@@ -361,6 +362,7 @@ impl GhostSession {
                         minimized: false,
                         surface: Surface::User,
                         source: TargetSource::Explicit,
+                        drifted_from: None,
                     };
                     self.set_anchor(&target);
                     return Ok(json!({

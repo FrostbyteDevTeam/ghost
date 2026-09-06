@@ -2000,11 +2000,71 @@ async fn handle_tool(
             Ok(json!({ "ok": true }))
         }
         "ghost_navigate_and_wait" => {
-            let window = p["window"].as_str().ok_or("missing param: window")?;
             let url = p["url"].as_str().ok_or("missing param: url")?;
             let timeout_ms = p["timeout_ms"].as_u64().unwrap_or(10000);
-            session.navigate_and_wait(window, url, timeout_ms).await.map_err(|e| e.to_string())?;
-            Ok(json!({ "ok": true }))
+            let settle_ms = p["settle_ms"].as_u64().unwrap_or(250);
+            // window= or the anchor; under the background policy the bar is set
+            // through UIA and the call returns on the title change. Only a
+            // foreground policy takes the old focus-and-type path.
+            let target = session.resolve_target(p["window"].as_str()).await.map_err(|e| e.to_string())?;
+            if session.focus_policy() == "foreground" {
+                session.navigate_and_wait(&target.title, url, timeout_ms).await.map_err(|e| e.to_string())?;
+                return Ok(json!({ "ok": true, "method": "foreground", "target": target.to_json() }));
+            }
+            // The two steps enter at the top-level dispatcher so every route
+            // applies: user desktop (posted messages / UIA patterns), hidden
+            // desktop, and DevTools for a browser that exposes a port.
+            const ADDRESS_BARS: [&str; 4] = [
+                "Address and search bar",              // Chrome, Comet, Brave, Vivaldi, Arc
+                "Search or enter web address",         // Edge
+                "Search with Google or enter address", // Firefox
+                "Address bar",
+            ];
+            let started = std::time::Instant::now();
+            let mut bar = None;
+            let mut last_err = String::new();
+            for name in ADDRESS_BARS {
+                let step = json!({
+                    "window": target.title,
+                    "name": name, "role": "edit", "action": "type", "text_input": url,
+                });
+                match dispatch_tool(session, "ghost_act", &step).await {
+                    Ok(_) => { bar = Some(name); break; }
+                    Err(e) if e.to_lowercase().contains("not found") => { last_err = e; continue; }
+                    Err(e) => return Err(e),
+                }
+            }
+            let Some(bar) = bar else {
+                return Err(format!(
+                    "no address bar found in '{}' (looked for {:?}); for a browser Ghost launched use ghost_tab_navigate. Last error: {last_err}",
+                    target.title, ADDRESS_BARS
+                ));
+            };
+            let enter = json!({ "window": target.title, "keys": "Enter" });
+            dispatch_tool(session, "ghost_key", &enter).await?;
+            let (changed, title_after) = session
+                .wait_for_title_change(&target, timeout_ms)
+                .await
+                .map_err(|e| e.to_string())?;
+            if changed && settle_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(settle_ms)).await;
+            }
+            Ok(json!({
+                "ok": true,
+                "method": "background",
+                "address_bar": bar,
+                "url": url,
+                "title_before": target.title,
+                "title_after": title_after,
+                "title_changed": changed,
+                "ms": started.elapsed().as_millis() as u64,
+                "target": target.to_json(),
+                "note": if changed {
+                    "returned when the window title changed; the page may still be loading subresources - ghost_wait for=element for a specific control"
+                } else {
+                    "the title did not change within timeout_ms: same document, a slow load, or a page that keeps its title - ghost_see to confirm"
+                },
+            }))
         }
         "ghost_click_and_wait_for_text" => {
             let by = parse_by(p)?;
@@ -3153,12 +3213,13 @@ fn lean_tools_schema() -> Value {
           }}},
         // --- Waiting ---
         { "name": "ghost_wait",
-          "description": "Unified wait. for=ms (default): sleep N ms. for=idle: wait for screen stable. for=element: wait for an element (name/role) to appear/disappear WITHOUT clicking. for=value: wait until an element's VALUE equals/contains/changes (forms, async fields, 'wait until the total updates'). for=text: click a target then wait for text. for=event: next foreground change. for=cond: JSONLogic poll. for=navigate: focus window + navigate URL + page idle. Target window for element|value|idle|text = window= or the session anchor.",
+          "description": "Unified wait - use it instead of sleeping. for=element: an element (name/role) appears or disappears in the target window; returns the moment it does. for=value: an element's VALUE equals/contains/changes (forms, async fields, 'wait until the total updates'). for=navigate: load url in a browser window WITHOUT raising it - sets the address bar over UIA, presses Enter, returns when the window title changes (response: title_before, title_after, title_changed, ms); only a foreground focus policy takes the old focus-and-type path. for=idle: screen stable. for=text: click a target then wait for text. for=event: next foreground change. for=cond: JSONLogic poll. for=ms: a plain sleep - last resort, it costs its full length every run. Target window for element|value|idle|text|navigate = window= or the session anchor.",
           "inputSchema": { "type": "object", "properties": {
               "for": { "type": "string", "enum": ["ms","idle","element","value","text","event","cond","navigate"],
                        "description": "What to wait for (default ms)" },
               "ms": { "type": "integer", "description": "Milliseconds (for=ms)" },
-              "window": { "type": "string", "description": "Window scope (for=idle|navigate)" },
+              "window": { "type": "string", "description": "Window scope (for=idle|element|value|navigate); omit to use the anchor" },
+              "settle_ms": { "type": "integer", "default": 250, "description": "for=navigate: pause after the title change so the page can paint (0 = return immediately)" },
               "stable_frames": { "type": "integer", "default": 3, "description": "for=idle" },
               "timeout_ms": { "type": "integer", "default": 5000 },
               "name": { "type": "string", "description": "Element name (for=element|value)" },
@@ -3190,7 +3251,7 @@ fn lean_tools_schema() -> Value {
           }}},
         // --- Flow ---
         { "name": "ghost_run",
-          "description": "Execute a declarative step-by-step flow in one round-trip. Each step: {op, ...params}. Op is any lean verb or legacy tool name. Retries each step on failure (max_retries). CHAINING: a param value of \"${steps.N.path}\" is replaced with a field from step N's result before dispatch - e.g. {op:'find',name:'Save'} then {op:'ghost_click_at', x:'${steps.0.center.x}', y:'${steps.0.center.y}'}. A whole-string ref keeps its type (number stays number).",
+          "description": "Execute a declarative step-by-step flow in one round-trip. Each step: {op, ...params}. Op is any lean verb or legacy tool name. Retries each step on failure (max_retries). CHAINING: a param value of \"${steps.N.path}\" is replaced with a field from step N's result before dispatch - e.g. {op:'find',name:'Save'} then {op:'ghost_click_at', x:'${steps.0.center.x}', y:'${steps.0.center.y}'}. A whole-string ref keeps its type (number stays number). SPEED: name the window once; later steps can omit window= because the anchor follows that window by handle through title changes (a stale title still resolves and the response carries title_drift). Wait with {op:'ghost_wait', for:'element'|'value'|'navigate'} rather than for=ms - a fixed sleep costs its full length on every run.",
           "inputSchema": { "type": "object", "properties": {
               "steps": { "type": "array", "items": { "type": "object" }, "description": "Array of {op, ...params} steps (direct)" },
               "json_flow": { "type": "string", "description": "JSON-encoded steps array string" },
@@ -3457,11 +3518,12 @@ fn legacy_tools_schema_full() -> Value {
               "timeout_ms": { "type": "integer", "default": 5000 }
           }}},
         { "name": "ghost_navigate_and_wait",
-          "description": "Focus a browser window, navigate to URL, wait for page idle.",
-          "inputSchema": { "type": "object", "required": ["window", "url"], "properties": {
-              "window": { "type": "string" },
+          "description": "Load a URL in a browser window. Under the default background policy the address bar is set over UIA and Enter is posted, and the call returns when the window title changes (title_before/title_after/title_changed/ms); only a foreground policy focuses the window and types. window= or the anchor. Same as ghost_wait for=navigate.",
+          "inputSchema": { "type": "object", "required": ["url"], "properties": {
+              "window": { "type": "string", "description": "Title substring; omit to use the anchor" },
               "url": { "type": "string" },
-              "timeout_ms": { "type": "integer", "default": 10000 }
+              "timeout_ms": { "type": "integer", "default": 10000 },
+              "settle_ms": { "type": "integer", "default": 250 }
           }}},
         { "name": "ghost_click_and_wait_for_text",
           "description": "Click a target element, then wait for text to appear or disappear on screen.",

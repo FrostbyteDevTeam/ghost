@@ -289,6 +289,18 @@ Every tool runs on its own task, so a slow call does not block a fast one, and a
 second Ghost process can run alongside the first. Once it is mounted, run
 `ghost verify` to audit that on your own machine.
 
+**Speed.** Ghost's own time is small: about 75 ms for a text read, 200 ms for
+a verified click, 1 ms to list windows. What makes an agent session slow is
+what happens around the calls, and three habits remove most of it. Name the
+window once and omit `window=` afterwards: the anchor follows that window by
+handle, and a title it used to have still resolves instantly with
+`title_drift` in the response. Wait for a condition, not a duration:
+`ghost_wait for=element`, `for=value`, and `for=navigate` (sets the address
+bar in the background and returns when the title changes, about 0.4 to 1.4 s
+where a fixed sleep costs 6) return the moment the thing happened. Batch with
+`ghost_run` so one model turn does several steps. `scripts/speed-probe.mjs`
+measures all of this against any `ghost-mcp` binary.
+
 ### Shell control (`ghost_shell`)
 
 Ghost drives GUIs *and* the command line. `ghost_shell` runs terminal commands and

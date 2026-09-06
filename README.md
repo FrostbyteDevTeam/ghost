@@ -522,15 +522,17 @@ How well it works, measured with an independent observer while a person typed
 into another window for the whole run (`scripts/background-desktop-probe.mjs`,
 `scripts/interference-watch.ps1`):
 
-| | before 0.23 | 0.23 |
+| | before 0.23 | now |
 | --- | --- | --- |
-| keystrokes delivered to the wrong window | 48 | **0 to 1 of ~490** |
-| worst time a driven window held the foreground | 28 s | 20-100 ms |
+| keystrokes delivered to the wrong window | 48 | **1 in six runs of ~493** |
+| how soon a stolen foreground is noticed | never | ~1 ms |
 
-The residual is not rounding: a hand-back takes 20 to 100 ms, and someone typing
-at 25 characters a second can land one key inside that gap. Across clean runs it
-was zero, zero and one. It cannot be driven to a guaranteed zero by undoing the
-activation, only by never causing one.
+Since 0.23.2 the foreground is watched by event rather than by polling, so the
+hand-back starts about a millisecond after the window takes it. Six clean runs
+with a person typing throughout gave 0, 0, 0, 1, 0 and 0 keystrokes into the
+window Ghost was driving. It is not a guarantee - undoing an activation can
+never be one - and for a guarantee let Ghost start the app, so the activation
+never happens at all.
 
 For zero activation rather than a brief one, let Ghost start the app: anything
 it launches lives on a hidden desktop with its own input queue and cannot take

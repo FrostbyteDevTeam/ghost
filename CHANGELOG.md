@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.23.2] - the sentinel stops waiting to look
+
+0.23 left one honest residual: a hand-back took 20 to 100 ms, and someone
+typing at 25 characters a second could land a key inside it. Most of that gap
+was not the hand-back at all - it was the sentinel polling every 25 ms and so
+not yet knowing anything had happened.
+
+- **The foreground is now watched by event, not by poll.**
+  `EVENT_SYSTEM_FOREGROUND` arrives about a millisecond after a window takes
+  the foreground, so the hand-back starts immediately instead of up to 25 ms
+  later. The hook thread does nothing but queue the handle; a worker does the
+  work, so a hand-back can never delay the next event. The 25 ms poll stays as
+  a safety net, because a hook can be dropped and because the question is
+  level-triggered: a window that took the foreground and KEPT it must still be
+  handed back, and no further event will ever fire for it. Both paths call the
+  same function, so there is one rule, not two.
+- **A window that fights gets a bigger budget and a shorter pause.** With
+  detection down to a millisecond a hand-back is cheap, so it takes 14 rounds
+  inside 1.5 s to count as a losing fight (was 6), and the pause that follows
+  is 600 ms (was 2500). The old pause handed the screen over for seconds
+  precisely when a window was most determined to keep it.
+
+Measured, same harness, six clean runs of ~493 keystrokes each with a stand-in
+human typing throughout: the window Ghost was driving received **0, 0, 0, 1,
+0, 0** of them. Ghost handed the foreground back 14 to 36 times per run with
+no failures. Checked directly, every apparent multi-second "hold" in the event
+log covered 13 to 46 real keystrokes and **none of them went to the browser**:
+the gap between foreground EVENTS is not the same as time spent holding the
+foreground, and where each keystroke was delivered is the measure that counts.
+
 ## [0.23.1] - the last two holes
 
 Two things the 0.23.0 measurement pass turned up and did not fix.

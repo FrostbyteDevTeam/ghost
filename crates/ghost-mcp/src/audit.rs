@@ -53,17 +53,24 @@ const PROTECT_MS: u64 = 6_000;
 /// This many hand-backs inside `FIGHT_WINDOW` means something is taking the
 /// foreground faster than Ghost can give it back. Stand down rather than
 /// fight: a flickering desktop is worse than a window that stays up.
+///
+/// The budget is generous because the event hook makes a hand-back cost about
+/// a millisecond of detection: fourteen rounds take well under half a second,
+/// and a window that loses fourteen times in that span is genuinely stuck.
+/// With the old 25 ms polling this had to be small, and the pause that
+/// followed handed the screen over for seconds (measured: 2.6 s and 3.6 s).
 #[cfg(any(windows, test))]
 #[cfg_attr(not(windows), allow(dead_code))]
-const MAX_CONSECUTIVE_RESTORES: u32 = 6;
+const MAX_CONSECUTIVE_RESTORES: u32 = 14;
 /// Hand-backs further apart than this are separate events, not a fight.
 #[cfg(any(windows, test))]
 #[cfg_attr(not(windows), allow(dead_code))]
 const FIGHT_WINDOW: Duration = Duration::from_millis(1_500);
-/// How long a fight pauses the sentinel before it tries again.
+/// How long a fight pauses the sentinel before it tries again. Short on
+/// purpose: a pause is time the other window keeps the screen.
 #[cfg(any(windows, test))]
 #[cfg_attr(not(windows), allow(dead_code))]
-const STAND_DOWN: Duration = Duration::from_millis(2_500);
+const STAND_DOWN: Duration = Duration::from_millis(600);
 
 /// One synthetic foreground change.
 #[derive(Debug, Clone)]
@@ -96,6 +103,11 @@ struct State {
     /// allowed to exhaust the budget.
     consecutive: u32,
     last_restore: Option<Instant>,
+    /// The most recent foreground window that was NOT one Ghost is driving:
+    /// where the foreground goes back to. Shared state, because two things
+    /// watch the foreground now - an event hook that reacts in about a
+    /// millisecond, and a poller behind it as a safety net.
+    last_free_hwnd: isize,
     /// When set, the sentinel is not acting until this moment passes. A
     /// stand-down is a pause, never a surrender: an earlier version stood down
     /// permanently until real human input arrived, and a single burst at the
@@ -445,7 +457,152 @@ pub fn start() {
         let _ = std::thread::Builder::new()
             .name("ghost-audit".into())
             .spawn(sampler);
+        #[cfg(windows)]
+        {
+            let _ = std::thread::Builder::new()
+                .name("ghost-fg-hook".into())
+                .spawn(foreground_hook);
+        }
     });
+}
+
+/// One look at the foreground: is a window Ghost drives holding it when it
+/// should not be, and if so, give it back. Returns whether it handed back.
+///
+/// Called from two places on purpose. The event hook below reaches it about a
+/// millisecond after the foreground moves, which is what keeps a keystroke from
+/// landing in the wrong window; the poller reaches it every 25 ms as a safety
+/// net, because a hook can be dropped and because the question is
+/// level-triggered - a window that took the foreground and KEPT it must still
+/// be handed back, and no further event will ever fire for it.
+#[cfg(windows)]
+fn consider_foreground(h: isize, title_hint: Option<String>) -> bool {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowTextW;
+    if h == 0 {
+        return false;
+    }
+    let now = Instant::now();
+    let pid_of = ghost_session::engine::system::window_pid;
+    let chose = crate::realinput::human_chose_a_window(
+        crate::realinput::since_real_click(),
+        crate::realinput::since_real_alt(),
+    );
+    if !is_protected(h, now, pid_of) {
+        // Somewhere the human may legitimately be: remember it as the place to
+        // hand the foreground back to. A window Ghost has driven only counts
+        // once the human has actually chosen it - protection EXPIRES, and
+        // without this the thief becomes its own hand-back destination.
+        if chose || !is_ever_driven(h, pid_of) {
+            state().lock().unwrap_or_else(|p| p.into_inner()).last_free_hwnd = h;
+        }
+        return false;
+    }
+    if !ghost_session::engine::focus::is_background_only() {
+        return false;
+    }
+    let (stood_down, last_human, last_free) = {
+        let st = state().lock().unwrap_or_else(|p| p.into_inner());
+        (
+            st.stood_down_until.map(|t| t > now).unwrap_or(false),
+            st.last_human_hwnd,
+            st.last_free_hwnd,
+        )
+    };
+    if !should_hand_back(true, crate::realinput::watching(), chose, stood_down) {
+        return false;
+    }
+    let dest = if last_free != 0 && last_free != h { last_free } else { last_human };
+    if dest == 0 || dest == h {
+        return false;
+    }
+    let title = title_hint.filter(|t| !t.is_empty()).unwrap_or_else(|| unsafe {
+        let mut buf = [0u16; 256];
+        let n = GetWindowTextW(HWND(h as *mut core::ffi::c_void), &mut buf);
+        String::from_utf16_lossy(&buf[..n.max(0) as usize])
+    });
+    hand_back(dest, h, &title);
+    true
+}
+
+/// The hook's queue: one handle per foreground change, handled OFF the hook
+/// thread so a hand-back (which can take a few hundred milliseconds) never
+/// stalls delivery of the next event.
+#[cfg(windows)]
+static HOOK_TX: OnceLock<Mutex<Option<std::sync::mpsc::Sender<isize>>>> = OnceLock::new();
+
+#[cfg(windows)]
+unsafe extern "system" fn on_foreground(
+    _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
+    _event: u32,
+    hwnd: windows::Win32::Foundation::HWND,
+    id_object: i32,
+    _id_child: i32,
+    _thread: u32,
+    _ms: u32,
+) {
+    // idObject 0 is the window itself; carets and other children raise this
+    // event too and are not foreground changes.
+    if id_object != 0 {
+        return;
+    }
+    if let Some(lock) = HOOK_TX.get() {
+        if let Ok(guard) = lock.lock() {
+            if let Some(tx) = guard.as_ref() {
+                let _ = tx.send(hwnd.0 as isize);
+            }
+        }
+    }
+}
+
+/// Watch the foreground by EVENT rather than by polling.
+///
+/// Polling at 25 ms means up to 25 ms of the wrong window in front before Ghost
+/// even looks, and someone typing at 25 characters a second lands a key in that
+/// gap - measured, one key per run. `EVENT_SYSTEM_FOREGROUND` arrives about a
+/// millisecond after the change instead.
+#[cfg(windows)]
+fn foreground_hook() {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Accessibility::SetWinEventHook;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, GetMessageW, TranslateMessage, EVENT_SYSTEM_FOREGROUND, MSG,
+        WINEVENT_OUTOFCONTEXT,
+    };
+    let (tx, rx) = std::sync::mpsc::channel::<isize>();
+    if HOOK_TX.set(Mutex::new(Some(tx))).is_err() {
+        return;
+    }
+    // The worker: everything slow happens here, never in the callback.
+    let _ = std::thread::Builder::new()
+        .name("ghost-sentinel".into())
+        .spawn(move || {
+            while let Ok(h) = rx.recv() {
+                consider_foreground(h, None);
+            }
+        });
+    unsafe {
+        let hook = SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            None,
+            Some(on_foreground),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
+        if hook.is_invalid() {
+            tracing::warn!(
+                "foreground event hook could not be installed; the sentinel falls back to polling"
+            );
+            return;
+        }
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, HWND(std::ptr::null_mut()), 0, 0).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -454,11 +611,6 @@ fn sampler() {
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
     use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
     let mut prev: Option<isize> = None;
-    // The most recent foreground window that was NOT one Ghost is driving:
-    // where the foreground goes back to. Kept across samples because the
-    // sentinel is level-triggered (see below) and cannot rely on having seen
-    // the edge that took it away.
-    let mut last_free: isize = 0;
     loop {
         // Fast while a window Ghost drove could still activate itself.
         let watching = {
@@ -491,21 +643,21 @@ fn sampler() {
             // them. The burst counter is left alone - `FIGHT_WINDOW` ages it
             // out on its own, and clearing it here would make a fight while the
             // human is present impossible to detect.
-            if crate::realinput::since_real_input().map(|ms| ms < HUMAN_INPUT_WINDOW_MS).unwrap_or(false) {
+            if crate::realinput::since_real_input()
+                .map(|ms| ms < HUMAN_INPUT_WINDOW_MS)
+                .unwrap_or(false)
+            {
                 let mut st = state().lock().unwrap_or_else(|p| p.into_inner());
                 if st.stood_down_until.is_some() {
                     st.stood_down_until = None;
                     st.consecutive = 0;
                 }
             }
-            let from = prev;
-            let now = Instant::now();
-            let to_is_protected = is_protected(h, now, ghost_session::engine::system::window_pid);
+            let pid_of = ghost_session::engine::system::window_pid;
             // For "did the human choose this?", a window Ghost has EVER driven
             // is suspect, not just one currently protected: protection expires
             // while a thief still holds the screen.
-            let to_is_ghosts = to_is_protected
-                || is_ever_driven(h, ghost_session::engine::system::window_pid);
+            let to_is_ghosts = is_protected(h, Instant::now(), pid_of) || is_ever_driven(h, pid_of);
             if let Some(incident) = observe(&mut prev, h, title.clone(), idle_ms, to_is_ghosts) {
                 tracing::warn!(
                     to = %incident.to_title,
@@ -514,67 +666,11 @@ fn sampler() {
                     "audit: SYNTHETIC foreground change"
                 );
             }
-            let _ = from;
-            if !to_is_protected {
-                // Somewhere the human may legitimately be: remember it as the
-                // place to hand the foreground back to. A window Ghost has
-                // driven only counts once the human has actually chosen it.
-                let chose_now = crate::realinput::human_chose_a_window(
-                    crate::realinput::since_real_click(),
-                    crate::realinput::since_real_alt(),
-                );
-                if h != 0
-                    && (chose_now
-                        || !is_ever_driven(h, ghost_session::engine::system::window_pid))
-                {
-                    last_free = h;
-                }
-                continue;
+            if consider_foreground(h, Some(title)) {
+                // The hand-back moved the foreground; read it back so the next
+                // sample does not report it as a change the human made.
+                prev = Some(GetForegroundWindow().0 as isize);
             }
-            if !ghost_session::engine::focus::is_background_only() {
-                continue;
-            }
-            // LEVEL-triggered, not edge-triggered. An earlier version acted
-            // only when the foreground CHANGED since the last sample, and one
-            // missed edge (the window re-taking the foreground in the moments
-            // between the hand-back and the next read) left the sentinel blind
-            // while the window kept the screen - measured at 28 s. So the
-            // question asked every sample is simply: is a window Ghost drives
-            // holding the foreground when it should not be?
-            let (stood_down, last_human) = {
-                let st = state().lock().unwrap_or_else(|p| p.into_inner());
-                (st.stood_down_until.map(|t| t > now).unwrap_or(false), st.last_human_hwnd)
-            };
-            let since_click = crate::realinput::since_real_click();
-            let since_alt = crate::realinput::since_real_alt();
-            let chose = crate::realinput::human_chose_a_window(since_click, since_alt);
-            if !should_hand_back(true, crate::realinput::watching(), chose, stood_down) {
-                if changed {
-                    tracing::debug!(
-                        to = h, ?since_click, ?since_alt, chose, stood_down,
-                        hooks = crate::realinput::watching(),
-                        "sentinel: a driven window has the foreground and it was left alone"
-                    );
-                }
-                continue;
-            }
-            // Where it belongs: the last window that was not one Ghost drives,
-            // else the last one the human chose themselves.
-            let dest = if last_free != 0 && last_free != h { last_free } else { last_human };
-            if dest == 0 || dest == h {
-                continue;
-            }
-            let title = if title.is_empty() {
-                let mut buf = [0u16; 256];
-                let n = GetWindowTextW(hwnd, &mut buf);
-                String::from_utf16_lossy(&buf[..n.max(0) as usize])
-            } else {
-                title
-            };
-            hand_back(dest, h, &title);
-            // The hand-back moved the foreground; read it back so the next
-            // sample does not report it as a change the human made.
-            prev = Some(GetForegroundWindow().0 as isize);
         }
     }
 }

@@ -134,8 +134,19 @@ built to be automated.
 | Platform | Status | Engine |
 | --- | --- | --- |
 | **Windows** | ✅ full and verified | `ghost-core` - Win32 UI Automation, SendInput, posted window messages, DXGI/GDI capture |
-| **Linux** | ✅ functional - X11 + AT-SPI2 verified by live CI tests | `ghost-linux` - AT-SPI2 over D-Bus, XTEST / RemoteDesktop portal / uinput, X11 `GetImage` / Screenshot portal |
+| **Linux, X11** | ✅ functional - verified by live CI tests against a real GTK app | `ghost-linux` - AT-SPI2 over D-Bus, XTEST input, X11 `GetImage` capture |
+| **Linux, Wayland** | ⚠️ implemented, NOT verified - no test has run it on hardware | same AT-SPI2 discovery and actions; input and capture go through the RemoteDesktop / Screenshot portals or uinput instead |
 | **macOS** | 🚧 scaffold | Accessibility + CGEvent + ScreenCaptureKit - to be built on a Mac |
+
+Wayland deserves the separate row rather than a footnote: it is the default
+session on current Ubuntu and Fedora, so it is what most Linux users would
+actually run, and it is the part with no test behind it. The discovery and
+action layer is shared with X11 and is covered, and it is the layer that
+matters most here - AT-SPI2 asks the application to do the thing, so there is
+no pointer to move and no window to raise. What is unverified is the fallback
+underneath: portal input, portal capture, uinput. If you run Wayland, treat
+`ghost doctor` as the first thing to run and expect to file bugs. Reports are
+welcome and are the fastest way that row changes.
 
 `ghost-session` and `ghost-mcp` are shared: the locator tiers, grounding cascade,
 act-then-verify loop and the 20 core MCP verbs are written once and run on both
@@ -146,8 +157,9 @@ and isolated desktops are Windows-only and are reported as such rather than fake
 **The wedge survives the port.** On Windows, driving an app without stealing
 focus is built on posted window messages. Linux has a cleaner analogue in
 AT-SPI2 actions: the application performs the operation through its own toolkit,
-so there is no pointer to move and no window to raise - and it behaves the same
-under X11 and Wayland. Synthetic input is only the fallback there.
+so there is no pointer to move and no window to raise. That layer is the same
+code under X11 and Wayland; synthetic input is only the fallback beneath it,
+and the fallback is the part Wayland has not been tested on.
 
 This is tested, not asserted: CI stands up a real desktop (Xvfb + D-Bus +
 at-spi-bus-launcher), drives a real GTK application, and requires that text
@@ -187,8 +199,18 @@ tar -xzf ghost-linux-x86_64.tar.gz && ./install.sh
 Windows: download `ghost-windows-x64.zip` from the same page. Verify the
 checksum, unzip, and add the folder to your `PATH`. Then run `ghost doctor`.
 
+**Check where a download came from.** Every release artifact carries a signed
+build provenance attestation, so you can prove a file came out of this
+repository's release workflow and nowhere else, at a named commit:
+
+```bash
+gh attestation verify ghost-windows-x64.mcpb --repo NORTHTEKDevs/ghost
+```
+
 The binaries are **not code-signed yet**, so Windows SmartScreen will warn you on first run (click *More info*
-→ *Run anyway*). The release pipeline signs them the moment a signing identity is configured; see
+→ *Run anyway*). That warning is about publisher identity, which needs a paid certificate tied to a verified legal
+entity; the attestation above is the stronger statement about origin and costs nothing, but Windows does not read it.
+The pipeline signs the moment a certificate is configured, from any CA - see
 [`docs/code-signing.md`](docs/code-signing.md). If an antivirus engine quarantines a release, verify the
 checksum and see [`docs/antivirus.md`](docs/antivirus.md) for what the binaries do to stay recognisable and how
 to report a false positive. The kit buys convenience, not capability - everything Ghost can do is in the free source
@@ -507,15 +529,32 @@ whether it is locked; the server logs both at start.
 }}}
 ```
 
+### What you are agreeing to
+
+Ghost has two settings that decide how much of your computer an agent gets.
+Installing the bundle shows both as checkboxes; running the binary directly,
+they are environment variables. The server prints where it stands on both at
+start-up, so the host's log always answers the question.
+
+| Setting | Default | What "on" means |
+| --- | --- | --- |
+| Keep Ghost off your mouse and keyboard (`GHOST_FOCUS_LOCK`) | **on** | The agent can never raise the focus policy, so it drives windows in the background and cannot take your cursor. Turn it off only if you want an agent to use your real input. |
+| Allow shell commands (`GHOST_SHELL`) | **on** | `ghost_shell` runs programs with your account's rights, which is how an agent runs builds, git and scripts - and it is why most agents use Ghost. It is full access to the machine. Turn it off and every shell call refuses; windows, screen reading and input still work. |
+
+The shell is on by default deliberately. It is the capability, not a bonus, and
+a tool that quietly ships without the thing people install it for is worse than
+one that tells you plainly what it can do. If that is more than you want to
+hand over, the checkbox is right there and the refusal is explicit.
+
 A locked policy still leaves one thing outside Ghost's control: an application
 can activate its OWN window, and Chromium does exactly that when an agent types
 into a page or clicks a button through the accessibility API. Nothing outside
 the browser can stop that call. So since 0.23 Ghost undoes it. The interference
-audit doubles as a sentinel: while a window it is driving could still activate
-itself, it checks the foreground every 25 ms and hands it straight back unless
-you chose that window yourself - by clicking it or alt-tabbing to it, which it
-can tell apart from typing because it watches for REAL input, not synthesized
-input. `ghost_session_state` reports how often that happened
+audit doubles as a sentinel: it is told the moment any window takes the
+foreground (a Windows event, about a millisecond) and hands it straight back
+unless you chose that window yourself - by clicking it or alt-tabbing to it,
+which it can tell apart from typing because it watches for REAL input, not
+synthesized input. `ghost_session_state` reports how often that happened
 (`foreground_handed_back`).
 
 How well it works, measured with an independent observer while a person typed

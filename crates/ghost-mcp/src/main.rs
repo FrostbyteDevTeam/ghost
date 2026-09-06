@@ -378,13 +378,15 @@ async fn async_main() {
             std::process::exit(1);
         }
     };
-    // One line in the host's log that says whether this process can ever take
-    // the user's input: the policy it starts with and whether it is locked there.
+    // One line in the host's log for the two things that decide how much this
+    // process can do to the machine: whether it can ever take the user's input,
+    // and whether it can run programs.
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         policy = session.focus_policy(),
         locked = session.focus_locked(),
-        "focus policy (GHOST_FOCUS_POLICY selects, GHOST_FOCUS_LOCK=off lets tools raise it)"
+        shell = ghost_session::shell::shell_enabled(),
+        "capabilities (GHOST_FOCUS_POLICY selects the policy, GHOST_FOCUS_LOCK=off lets tools raise it, GHOST_SHELL=off refuses every shell call)"
     );
 
     // Single writer: responses arrive from any request task, bytes never mix.

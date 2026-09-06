@@ -26,7 +26,8 @@
       "args": [],
       "env": {
         "GHOST_VISION_API_KEY": "${user_config.vision_api_key}",
-        "GHOST_FOCUS_LOCK": "${user_config.lock_focus_policy}"
+        "GHOST_FOCUS_LOCK": "${user_config.lock_focus_policy}",
+        "GHOST_SHELL": "${user_config.allow_shell}"
       }
     }
   },
@@ -50,6 +51,13 @@
       "type": "boolean",
       "title": "Keep Ghost off your mouse and keyboard (recommended)",
       "description": "On: the agent can never raise Ghost's focus policy above 'background', so it drives apps on a hidden desktop and browsers over CDP while you keep working. Off: the agent may switch to 'prefer_background' or 'foreground' and drive your real cursor and keyboard.",
+      "default": true,
+      "required": false
+    },
+    "allow_shell": {
+      "type": "boolean",
+      "title": "Allow shell commands (on: the agent can run any program you can)",
+      "description": "Ghost's shell is how an agent runs builds, git, scripts and CLIs, and it is why most agents use it. It runs with your account's full rights, so leaving it on means the agent can do anything at this computer that you can. Turn it off to limit Ghost to windows, screen reading and input; every shell call then refuses with an error that says so.",
       "default": true,
       "required": false
     },

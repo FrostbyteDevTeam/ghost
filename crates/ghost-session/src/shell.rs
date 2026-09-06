@@ -13,7 +13,8 @@
 //! text injection-safe; the per-session nonce means a late sentinel from a
 //! timed-out command can never be mistaken for a later command's sentinel.
 //!
-//! Kill-switch: `GHOST_SHELL=off` makes every op return an error.
+//! Kill-switch: `GHOST_SHELL=off` (or `false`/`0`/`no`) makes every op
+//! return an error. The MCP bundle exposes it as a checkbox.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -79,7 +80,25 @@ impl ShellRegistry {
 }
 
 fn shell_disabled() -> bool {
-    matches!(std::env::var("GHOST_SHELL"), Ok(v) if v.trim().eq_ignore_ascii_case("off"))
+    shell_off_value(std::env::var("GHOST_SHELL").ok().as_deref())
+}
+
+/// Whether `ghost_shell` will run anything. Reported at start-up, so an
+/// operator can see from the host's log whether this server can run programs.
+pub fn shell_enabled() -> bool {
+    !shell_disabled()
+}
+
+/// How `GHOST_SHELL` reads. `off` is the documented spelling; `false`, `0` and
+/// `no` are accepted too, because the MCP bundle exposes this as a checkbox and
+/// a checkbox writes `false`, not `off`. Unset, empty, or anything unrecognised
+/// leaves the shell ON - the capability is the point of the tool, so only a
+/// clear refusal turns it off.
+fn shell_off_value(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("off" | "false" | "0" | "no" | "disabled")
+    )
 }
 
 /// `GHOST_SHELL_WARM=off` disables the pre-spawned spare (one idle PowerShell
@@ -264,7 +283,7 @@ impl GhostSession {
     pub async fn shell(&self, args: &Value) -> Result<Value> {
         if shell_disabled() {
             return Err(GhostError::Config(
-                "ghost_shell is disabled (GHOST_SHELL=off). Unset the env var to enable shell control.".into(),
+                "ghost_shell is disabled (GHOST_SHELL is off). The operator turns it on by removing that setting - in Claude Desktop it is the \"Allow shell commands\" checkbox on the extension.".into(),
             ));
         }
         let op = args.get("op").and_then(|v| v.as_str()).unwrap_or("run");
@@ -832,6 +851,19 @@ mod tests {
     fn sanitize_extracts_clixml_error_text() {
         let clixml = "#< CLIXML\r\n<Objs><S S=\"Error\">boom went _x000A_the thing</S></Objs>";
         assert_eq!(sanitize_ps_stderr(clixml), "boom went \nthe thing");
+    }
+
+    #[test]
+    fn shell_off_accepts_the_spellings_a_checkbox_writes() {
+        // The documented spelling, and what an mcpb boolean actually renders.
+        for off in ["off", "OFF", " off ", "false", "0", "no", "disabled"] {
+            assert!(shell_off_value(Some(off)), "{off:?} should turn the shell off");
+        }
+        // On, or nothing said at all: the capability stays, because it is the
+        // point of the tool and only a clear refusal should remove it.
+        for on in [None, Some(""), Some("on"), Some("true"), Some("1"), Some("yes"), Some("garbage")] {
+            assert!(!shell_off_value(on), "{on:?} should leave the shell on");
+        }
     }
 
     #[test]

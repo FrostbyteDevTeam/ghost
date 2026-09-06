@@ -1,79 +1,103 @@
-# Code signing the Windows binaries
+# Signing and provenance
 
-## Why
+Two different guarantees, often confused. Ghost ships one of them today.
 
-The Windows binaries are not code-signed. Windows SmartScreen therefore shows
-"Windows protected your PC" on the first run of `ghost.exe`, `ghost-http.exe`
-and `ghost-mcp.exe`, and the user has to click *More info -> Run anyway*. For
-a tool people install from a README that is the single largest piece of
-first-run friction, and no amount of code fixes it: the fix is a certificate
-tied to a verified legal identity.
+| | Authenticode signature | Build provenance attestation |
+| --- | --- | --- |
+| Answers | "a named legal entity vouches for this file" | "this exact file came out of that repository's release workflow" |
+| Quiets SmartScreen | yes | no |
+| Covers the Linux artifacts | no | yes |
+| Costs | a certificate from a certificate authority | nothing |
+| Status in Ghost | **not yet** - needs a certificate | **live since 0.23.3** |
 
-## What is already in place
+## What ships today: provenance
 
-`.github/workflows/release.yml` signs all three binaries with
-[Azure Artifact Signing](https://learn.microsoft.com/azure/trusted-signing/)
-(the service formerly named Trusted Signing) **as soon as the secrets below
-exist**, before the archive and the MCP Bundle are packed, so every shipped
-copy carries the signature. It then verifies each file reports a `Valid`
-Authenticode status and fails the release if not. With no secrets set, the
-step is skipped and the run prints a notice; nothing else changes.
+Every release attaches a signed provenance statement to `*.zip`, `*.tar.gz`
+and `*.mcpb` (`actions/attest-build-provenance`, in the `publish` job). It
+records the repository, the commit, the workflow file and the runner that
+produced the file, signed through Sigstore with a short-lived key that never
+exists as a secret anyone could steal.
 
-## What only the account owner can do
+Anyone can check a download against it:
 
-Azure Artifact Signing needs a verified identity for FrostByte LLC (the entity
-behind Northtek). This is a one-time setup, roughly a day of elapsed time,
-almost all of it waiting on Microsoft's identity validation.
+```bash
+gh attestation verify ghost-windows-x64.mcpb --repo NORTHTEKDevs/ghost
+```
 
-1. **Create the signing account.** In the Azure portal, create an *Artifact
-   Signing* (Trusted Signing) account in a supported region (East US is
-   typical). Pricing is a low flat monthly fee (about $10/month at the time of
-   writing, "Basic" tier), far below a traditional OV/EV certificate.
-2. **Identity validation.** Under the account, start an *Identity validation*
-   of type Organization for FrostByte LLC. Microsoft checks the legal entity
-   (state registration, EIN, address); expect a request for documents and
-   1 to 3 business days. It must pass before a certificate profile can be
-   created.
-3. **Certificate profile.** Create a *Public Trust* certificate profile bound
-   to that validated identity. Note its name.
-4. **App registration for CI.** In Entra ID, create an App Registration,
-   create a client secret for it, and grant that application the
-   *Trusted Signing Certificate Profile Signer* role on the signing account.
-5. **Repository secrets** (Settings -> Secrets and variables -> Actions):
+A pass means the bytes on disk are the bytes that workflow produced, from that
+commit. It does not mean Windows trusts them, and it is not a substitute for a
+certificate. It is the stronger claim about *origin*, and the only one that
+also covers Linux, where Authenticode does not exist.
 
-   | Secret | Value |
-   |---|---|
-   | `AZURE_TENANT_ID` | the Entra tenant ID |
-   | `AZURE_CLIENT_ID` | the app registration's application (client) ID |
-   | `AZURE_CLIENT_SECRET` | the client secret you created |
-   | `SIGNING_ENDPOINT` | the account's endpoint, e.g. `https://eus.codesigning.azure.net/` |
-   | `SIGNING_ACCOUNT` | the signing account name |
-   | `SIGNING_PROFILE` | the certificate profile name |
+## What is missing, and why it costs money
 
-6. **Tag a release.** The next `v*` tag signs. Check the *Verify the
-   signatures* step in the Release run: it prints the status and signer
-   subject for each binary.
+SmartScreen's warning is about *identity*, not integrity: "unknown publisher".
+Only a certificate issued to a validated legal entity removes it, and since
+June 2023 the CA/Browser Forum has required every code-signing private key to
+live on FIPS 140-2 hardware - a posted USB token or a cloud HSM. That
+requirement is why no free Authenticode path exists, and why a self-signed
+certificate is worse than none: it changes the warning's wording without adding
+any verified identity, and it reads as an attempt to look legitimate.
 
-## What to expect afterwards
+## Getting a certificate, cheapest first
 
-- A signed binary still gets a SmartScreen prompt until the certificate has
-  accumulated reputation with Microsoft. With Artifact Signing that happens
-  quickly because the identity is already Microsoft-validated; with a
-  traditional OV certificate it can take weeks of downloads. There is no way
-  to buy instant reputation short of an EV certificate on a hardware token,
-  which costs several hundred dollars a year and does not fit an automated
-  release pipeline well.
-- The signature is RFC 3161 timestamped, so binaries stay valid after the
-  short-lived Artifact Signing certificate rotates.
-- Linux binaries are not signed; distributions verify by checksum, which the
-  release already publishes.
+The build takes a certificate from **any** CA. `release.yml` uses `signtool`
+with a PFX rather than one vendor's action, so changing CA is a change of
+secret, not a rewrite of the workflow.
 
-## Alternatives considered
+1. **SignPath Foundation - free for open source.** Issues a certificate to
+   qualifying OSS projects and signs from their cloud service, with no hardware
+   to buy. The requirements are a public repository, an OSI licence and
+   CI-built releases; Ghost is MIT, public and built by GitHub Actions, so it
+   fits. Apply at <https://signpath.org/apply>. Take this route first.
+2. **Certum Open Source Code Signing** - roughly €100 for three years, a
+   hardware token posted to you, identity verified against ID documents. Cheap,
+   long established, and available to an individual as well as a company.
+3. **A commercial OV certificate** (Sectigo, SSL.com, DigiCert) - roughly $200
+   to $400 a year. Worth it only if the business needs a certificate for other
+   software too.
+4. **EV** - roughly $400 to $700 a year, and the only option that carries
+   SmartScreen reputation from the first download instead of earning it.
 
-- **OV / EV certificate from a CA** (Sectigo, DigiCert, SSL.com): $200 to
-  $600 per year, EV requires a hardware token or cloud HSM, and the CI story
-  is worse. Only worth it if instant SmartScreen reputation matters more than
-  cost.
-- **Self-signed:** worthless for SmartScreen; do not bother.
-- **Do nothing:** the current state. The README says the binaries are
-  unsigned and tells users how to click through.
+OV and Foundation certificates still have to build reputation: the warning
+fades as copies are downloaded and run without incident, typically over weeks.
+EV skips that wait. For a project at Ghost's stage the sane order is SignPath
+first, then patience.
+
+## Turning signing on
+
+Two repository secrets, whatever the CA:
+
+| Secret | Value |
+| --- | --- |
+| `WINDOWS_PFX_BASE64` | the certificate as a PFX, base64-encoded |
+| `WINDOWS_PFX_PASSWORD` | its password |
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx")) | Set-Clipboard
+```
+
+The next `v*` tag signs `ghost.exe`, `ghost-http.exe` and `ghost-mcp.exe` in
+place before the archive and the bundle are packed, so every shipped copy
+carries the signature, RFC 3161 timestamped so it outlives the certificate's
+own expiry. The workflow then reads back `Get-AuthenticodeSignature` on each
+file and **fails the release** unless all three report `Valid`: a signing step
+that exits zero is not evidence that anything was signed.
+
+With no secrets set, signing is skipped, the run prints a notice, and
+provenance is attested either way.
+
+If the certificate lives on a hardware token that refuses to export a PFX (most
+OV and EV tokens do refuse), signing cannot happen on a hosted runner at all.
+The options are then the CA's own cloud signing service, which usually ships a
+GitHub Action, or a self-hosted runner with the token attached. SignPath's
+cloud service avoids the problem entirely, which is a second reason to start
+there.
+
+## What users see meanwhile
+
+The README says the binaries are unsigned and that SmartScreen will warn, next
+to the checksum and the `gh attestation verify` command.
+[`docs/antivirus.md`](antivirus.md) covers what the binaries do to stay
+recognisable to scanners and how to report a false positive. Saying so plainly
+costs less trust than a user discovering it at the warning dialog.

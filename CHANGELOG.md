@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.23.3] - what you are agreeing to, and where it came from
+
+Readiness work rather than new capability: the three things a first outside
+user would trip over.
+
+- **The shell is a visible choice now, and it stays on.** `ghost_shell` runs
+  programs with your account's rights - it is the capability most agents come
+  for, and it is also full access to the machine. It was on by default and
+  mentioned only in a tool description. The MCP bundle now shows it as a
+  checkbox next to the focus lock, worded plainly, and `GHOST_SHELL` accepts
+  the spellings a checkbox actually writes (`false`, `0`, `no`) as well as the
+  documented `off`. The default stays ON deliberately: a tool that quietly
+  ships without the thing people installed it for is worse than one that says
+  what it can do. `scripts/shell-switch-probe.mjs` proves the setting by
+  running a real command through a real server for each spelling.
+- **The server states its powers at start-up.** One line in the host's log:
+  version, focus policy, whether the policy is locked, and whether the shell is
+  enabled. Previously it reported only the policy.
+- **The vanished-window guard moved to where it cannot be missed.** When a
+  raised window ends up neither visible nor minimised - seen once on
+  2026-09-04, never reproduced - the recovery ran on the `act` path only, so a
+  raise from a coordinate click or `op=focus` was unguarded. It now lives
+  inside `ensure_foreground`, which every raise in the crate goes through, with
+  a regression test that hides a window, raises it, and requires it back on
+  screen. The root cause is still unknown; the mitigation is now universal
+  instead of partial.
+- **Every release artifact now carries signed build provenance.** Not a
+  code-signing certificate, which costs money and answers a different
+  question - this answers "did this exact file come out of that repository's
+  workflow, at that commit", verifiable by anyone with
+  `gh attestation verify <file> --repo NORTHTEKDevs/ghost`, signed through
+  Sigstore with a key that never exists as a stealable secret. It covers the
+  Linux artifacts too, which Authenticode never can.
+- **Authenticode signing is vendor-neutral now.** The release workflow was
+  wired to one cloud provider's action and switched on by that provider's
+  secrets. It now signs with `signtool` and a PFX, so a certificate from any
+  certificate authority works and changing CA is a change of secret rather
+  than a rewrite. `docs/code-signing.md` leads with the free route for open
+  source projects (SignPath Foundation) and prices the alternatives, and is
+  explicit that no free path to Authenticode exists because the private key
+  must live on certified hardware. The release still fails if signing is
+  enabled and any binary comes back without a `Valid` status.
+- **Wayland gets its own row in the platform table, marked unverified.** It was
+  folded into "Linux ✅" with the caveat further down the page. It is the
+  default session on current Ubuntu and Fedora, so it is what most Linux users
+  would actually run, and it is the part no test has exercised. The shared
+  AT-SPI2 discovery and action layer is covered by live CI; what is unverified
+  is the fallback underneath it - portal input, portal capture, uinput.
+
 ## [0.23.2] - the sentinel stops waiting to look
 
 0.23 left one honest residual: a hand-back took 20 to 100 ms, and someone

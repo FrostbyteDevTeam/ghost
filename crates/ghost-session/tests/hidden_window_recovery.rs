@@ -202,3 +202,57 @@ async fn restore_if_hidden_shows_a_hidden_window_and_leaves_everything_else_alon
     let _ = ghost_core::process::kill(pid);
     let _ = child.wait();
 }
+
+/// The guard where it now lives: inside `ensure_foreground`, so a raise from
+/// ANY path recovers a window that vanished - not just the `act` path, which
+/// was the only guarded one when two browser windows disappeared on
+/// 2026-09-04. Raising a hidden window must leave it on screen.
+#[tokio::test]
+#[ignore]
+async fn raising_a_vanished_window_brings_it_back() {
+    let Some(exe) = testbed_exe() else {
+        eprintln!("skipped: build the testbed first (cargo build -p ghost-testbed --release)");
+        return;
+    };
+    let title = format!("Ghost Raise {}", std::process::id());
+    let mut child = std::process::Command::new(&exe)
+        .args(["--title", &title])
+        .spawn()
+        .expect("spawn the testbed");
+    let pid = child.id();
+    let session = GhostSession::new().expect("session");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut hwnd = 0isize;
+    while Instant::now() < deadline && hwnd == 0 {
+        if let Ok(ws) = session.list_windows().await {
+            if let Some(w) = ws.iter().find(|w| w.name.contains(&title)) {
+                hwnd = w.hwnd;
+            }
+        }
+        if hwnd == 0 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    assert!(hwnd != 0, "the testbed window never appeared");
+
+    hide_from_outside(hwnd);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(!is_visible(hwnd), "precondition: the window is hidden");
+
+    // Raising is a foreground action, so it needs the policy that allows one.
+    ghost_core::focus::set_lock(false);
+    ghost_core::focus::set_policy(ghost_core::focus::FocusPolicy::Foreground)
+        .expect("unlocked, so the policy may be raised");
+    let _ = ghost_core::uia::tree::ensure_foreground(hwnd, 600);
+    ghost_core::focus::set_policy(ghost_core::focus::FocusPolicy::Background).unwrap();
+    ghost_core::focus::set_lock(true);
+
+    assert!(
+        is_visible(hwnd),
+        "a raise must never leave the window it raised invisible"
+    );
+
+    let _ = ghost_core::process::kill(pid);
+    let _ = child.wait();
+}

@@ -942,13 +942,23 @@ pub fn ensure_foreground(hwnd_raw: isize, timeout_ms: u64) -> Result<bool, CoreE
         }
 
         let start = std::time::Instant::now();
-        while start.elapsed().as_millis() < timeout_ms as u128 {
-            if GetForegroundWindow() == hwnd {
-                return Ok(true);
-            }
+        let mut confirmed = GetForegroundWindow() == hwnd;
+        while !confirmed && start.elapsed().as_millis() < timeout_ms as u128 {
             std::thread::sleep(std::time::Duration::from_millis(15));
+            confirmed = GetForegroundWindow() == hwnd;
         }
-        Ok(GetForegroundWindow() == hwnd)
+        // A raised window must still be on screen afterwards. On 2026-09-04 two
+        // browser windows an agent had raised ended up neither visible nor
+        // minimised - simply gone from the taskbar - and the cause was never
+        // reproduced. The recovery lived on the `act` path only, so a raise
+        // from anywhere else (a coordinate click, `op=focus`) was unguarded.
+        // It lives HERE now because every raise in the crate goes through this
+        // function: the guard cannot be missed by a path someone adds later.
+        // `restore_if_hidden` is a no-op unless the window really did vanish,
+        // and it shows without activating, so it costs a visible window
+        // nothing.
+        let _ = restore_if_hidden(hwnd_raw);
+        Ok(confirmed)
     }
 }
 

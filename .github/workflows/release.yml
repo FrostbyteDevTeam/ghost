@@ -17,10 +17,13 @@ jobs:
     name: Build Windows binaries
     runs-on: windows-latest
     env:
-      # Code signing switches itself on when the Azure Artifact Signing secrets
-      # exist (docs/code-signing.md). Until then the binaries ship unsigned and
-      # SmartScreen warns on first run, which the README says.
-      SIGNING_ENABLED: ${{ secrets.AZURE_CLIENT_ID != '' }}
+      # Authenticode signing switches itself on when a certificate exists as a
+      # secret (docs/code-signing.md). Deliberately vendor-neutral: a
+      # code-signing certificate from ANY certificate authority, exported as a
+      # PFX, works - the choice of CA is not baked into the build. Until one
+      # exists the binaries ship unsigned and SmartScreen warns on first run,
+      # which the README says plainly.
+      SIGNING_ENABLED: ${{ secrets.WINDOWS_PFX_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -32,25 +35,38 @@ jobs:
       - name: Build release binaries
         run: cargo build --release --bin ghost --bin ghost-http --bin ghost-mcp
 
-      - name: Sign the Windows binaries (Azure Artifact Signing)
+      - name: Sign the Windows binaries (Authenticode)
         # Signs in place, BEFORE staging, so the archive and the .mcpb both carry
         # signed executables. Timestamped, so the signature outlives the cert.
+        #
+        # signtool with a PFX rather than one vendor's action: a certificate
+        # from any CA signs the same way, and swapping CA is then a secret
+        # change rather than a workflow rewrite. The PFX is written to the
+        # runner's temp directory and deleted in the same step; the runner is
+        # destroyed with the job either way.
         if: env.SIGNING_ENABLED == 'true'
-        uses: azure/trusted-signing-action@v2.0.0
-        with:
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          endpoint: ${{ secrets.SIGNING_ENDPOINT }}
-          trusted-signing-account-name: ${{ secrets.SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ secrets.SIGNING_PROFILE }}
-          files: |
-            ${{ github.workspace }}/target/release/ghost.exe
-            ${{ github.workspace }}/target/release/ghost-http.exe
-            ${{ github.workspace }}/target/release/ghost-mcp.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
+        shell: pwsh
+        env:
+          PFX_B64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'code-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_B64))
+          $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signtool) { Write-Error 'signtool.exe not found on this runner'; exit 1 }
+          "using $signtool"
+          try {
+            foreach ($f in 'ghost.exe', 'ghost-http.exe', 'ghost-mcp.exe') {
+              & $signtool sign /f $pfx /p $env:PFX_PASSWORD /fd SHA256 `
+                /tr http://timestamp.digicert.com /td SHA256 "target/release/$f"
+              if ($LASTEXITCODE -ne 0) { Write-Error "signing failed: $f"; exit 1 }
+            }
+          } finally {
+            Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+          }
 
       - name: Verify the signatures
         # A signing step that "succeeded" is not evidence; a Valid Authenticode
@@ -68,7 +84,7 @@ jobs:
 
       - name: Signing skipped
         if: env.SIGNING_ENABLED != 'true'
-        run: echo "::notice::Windows binaries are UNSIGNED - add the Azure Artifact Signing secrets (docs/code-signing.md) and they sign on the next tag."
+        run: echo "::notice::Windows binaries are UNSIGNED - add WINDOWS_PFX_BASE64 and WINDOWS_PFX_PASSWORD (docs/code-signing.md) and they sign on the next tag. Build provenance is attested either way."
 
       - name: Stage artifacts
         shell: pwsh
@@ -190,6 +206,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Build provenance: a signed statement of which workflow, which commit
+      # and which runner produced each file.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -203,6 +223,22 @@ jobs:
           find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.mcpb' -o -name '*.sha256' \) \
             -exec cp {} release/ \;
           ls -la release
+
+      - name: Attest build provenance
+        # What a download can prove WITHOUT a code-signing certificate: that
+        # this exact file came out of this repository's release workflow, from
+        # a named commit, and was not built or altered anywhere else. Anyone
+        # can check it with `gh attestation verify <file> --repo
+        # NORTHTEKDevs/ghost`, and it costs nothing. It is not Authenticode and
+        # does not quiet SmartScreen - only a CA certificate does that - but it
+        # is the stronger claim about origin, and it holds for the Linux
+        # artifacts too, which Authenticode never covers.
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            release/*.zip
+            release/*.tar.gz
+            release/*.mcpb
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

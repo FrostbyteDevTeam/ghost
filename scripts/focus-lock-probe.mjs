@@ -77,7 +77,8 @@ await withServer({ GHOST_FOCUS_LOCK: undefined, GHOST_FOCUS_POLICY: undefined },
   expect(st.data.focus_locked === true, 'ghost_session_state reports focus_locked:true', `focus_locked=${st.data.focus_locked}`);
   // tracing colours its output even into a pipe; strip the escapes before matching.
   const plain = stderr().replace(/\x1b\[[0-9;]*m/g, '');
-  expect(/focus policy.*locked=true/.test(plain), 'startup log line says locked=true');
+  expect(/capabilities .*locked=true/.test(plain), 'startup log line says locked=true');
+  expect(/capabilities .*shell=(true|false)/.test(plain), 'startup log line states whether the shell is enabled');
 });
 
 console.log('--- run 2: GHOST_FOCUS_LOCK=off (operator unlocked)');
